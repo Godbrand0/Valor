@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { BTN_GHOST, BTN_GOLD, INPUT, LABEL, PANEL, PageHeader, SectionTitle, SignInCard, Badge } from '@/components/admin/ui'
+import { BTN_GHOST, BTN_GOLD, INPUT, LABEL, PANEL, PageBanner, SectionTitle, SignInCard, Badge } from '@/components/admin/ui'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 // Same key AdminPage writes, so signing in there signs you in here (same tab).
@@ -106,17 +106,21 @@ export default function AdminGroupsPage() {
   const selectedSeason = seasons.find((x) => x.id === pickSeason)
 
   return (
-    <div className="max-w-3xl w-full flex flex-col gap-8">
-      <PageHeader
+    <div className="w-full flex flex-col gap-8">
+      <PageBanner
         kicker="Community"
         title="Groups"
         sub="Schools and communities. Each has a join link and its own leaderboard, and a season prize can be restricted to one group."
-        actions={groups.length > 0 && (
-          <>
-            <Badge tone="gold">{groups.length} group{groups.length === 1 ? '' : 's'}</Badge>
-            <Badge tone="slate">{totalMembers.toLocaleString()} members</Badge>
-          </>
-        )}
+        aside={<>
+          <div className="rounded-xl border border-valor-border/80 bg-black/45 backdrop-blur px-4 py-3">
+            <p className="text-[9px] uppercase tracking-[0.22em] font-bold text-slate-500">Groups</p>
+            <p className="font-[family-name:var(--font-family-display)] font-black text-3xl leading-none mt-1.5 tabular-nums bg-linear-to-b from-amber-100 via-amber-300 to-amber-500 bg-clip-text text-transparent">{groups.length}</p>
+          </div>
+          <div className="rounded-xl border border-valor-border/80 bg-black/45 backdrop-blur px-4 py-3">
+            <p className="text-[9px] uppercase tracking-[0.22em] font-bold text-slate-500">Members</p>
+            <p className="font-[family-name:var(--font-family-display)] font-black text-3xl leading-none mt-1.5 tabular-nums bg-linear-to-b from-amber-100 via-amber-300 to-amber-500 bg-clip-text text-transparent">{totalMembers.toLocaleString()}</p>
+          </div>
+        </>}
       />
 
       {msg && (
@@ -126,7 +130,8 @@ export default function AdminGroupsPage() {
         </div>
       )}
 
-      <section className="flex flex-col gap-3">
+      <div className="grid lg:grid-cols-12 gap-6 items-start">
+      <section className="lg:col-span-7 flex flex-col gap-3 min-w-0">
         <SectionTitle>Your groups</SectionTitle>
         {groups.length === 0 && <p className="text-slate-600 text-sm">No groups yet. Create the first one below.</p>}
         {groups.map((g) => {
@@ -184,6 +189,7 @@ export default function AdminGroupsPage() {
         })}
       </section>
 
+        <div className="lg:col-span-5 flex flex-col gap-6 min-w-0 lg:sticky lg:top-24">
       <section className="flex flex-col gap-3">
         <SectionTitle>Season prize goes to</SectionTitle>
         <div className={`${PANEL} flex flex-col gap-3`}>
@@ -243,6 +249,8 @@ export default function AdminGroupsPage() {
           </button>
         </div>
       </section>
+        </div>
+      </div>
     </div>
   )
 }

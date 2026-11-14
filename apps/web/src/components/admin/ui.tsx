@@ -5,6 +5,8 @@
 // so a page can adopt them without changing what it does.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { X } from 'lucide-react'
 
 /* ── class constants ─────────────────────────────────────────────────────── */
 
@@ -166,5 +168,73 @@ export function SignInCard({ title, body, href, cta }: { title: string; body: st
       <p className="text-sm text-slate-400">{body}</p>
       <a href={href} className={`${BTN_GOLD} mt-2 px-5 py-2.5 text-sm`}>{cta}</a>
     </div>
+  )
+}
+
+/** Hero banner for a page: game art behind the title, with a slot for at-a-glance cards. */
+export function PageBanner({
+  kicker, title, sub, actions, aside,
+}: { kicker: string; title: string; sub?: ReactNode; actions?: ReactNode; aside?: ReactNode }) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-valor-border isolate">
+      <div aria-hidden className="absolute inset-0 -z-20 opacity-55" style={{ background: 'url(/art/hero.webp) 72% 18% / cover' }} />
+      <div aria-hidden className="absolute inset-0 -z-10" style={{ background: 'linear-gradient(95deg, #07070d 18%, rgba(7,7,13,0.86) 48%, rgba(7,7,13,0.35) 100%)' }} />
+      <div aria-hidden className="absolute inset-x-10 top-0 h-px bg-linear-to-r from-transparent via-amber-500/60 to-transparent" />
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 p-6 sm:p-8">
+        <div className="min-w-0 max-w-xl">
+          <p className="text-[10px] uppercase tracking-[0.34em] font-bold text-amber-500">{kicker}</p>
+          <h1 className="font-[family-name:var(--font-family-display)] font-black text-white text-3xl sm:text-4xl tracking-wide leading-tight mt-1.5">{title}</h1>
+          {sub && <p className="text-sm text-slate-400 mt-2.5 leading-relaxed">{sub}</p>}
+          {actions && <div className="flex items-center gap-2 flex-wrap mt-5">{actions}</div>}
+        </div>
+        {aside && <div className="grid sm:grid-cols-2 lg:flex lg:flex-col gap-3 lg:w-72 shrink-0">{aside}</div>}
+      </div>
+    </div>
+  )
+}
+
+/** Slide-over panel from the right. Esc or a click on the scrim closes it. */
+export function Drawer({
+  open, onClose, kicker, title, sub, children,
+}: { open: boolean; onClose: () => void; kicker?: string; title: string; sub?: string; children: ReactNode }) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prev }
+  }, [open, onClose])
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            key="scrim" className="fixed inset-0 z-[70] bg-black/65 backdrop-blur-[2px]"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose}
+          />
+          <motion.aside
+            key="panel" role="dialog" aria-modal="true" aria-label={title}
+            className="fixed inset-y-0 right-0 z-[71] w-full max-w-xl flex flex-col border-l border-valor-border bg-[#0a0a11] shadow-[-30px_0_60px_-30px_rgba(0,0,0,0.9)]"
+            initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+            transition={{ type: 'spring', damping: 34, stiffness: 340 }}
+          >
+            <div className="relative flex items-start justify-between gap-4 px-6 py-5 border-b border-valor-border/80">
+              <div aria-hidden className="absolute inset-x-6 top-0 h-px bg-linear-to-r from-transparent via-amber-500/60 to-transparent" />
+              <div className="min-w-0">
+                {kicker && <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-500">{kicker}</p>}
+                <h2 className="font-[family-name:var(--font-family-display)] font-black text-white text-xl tracking-wide mt-0.5">{title}</h2>
+                {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
+              </div>
+              <button onClick={onClose} aria-label="Close" className="shrink-0 grid place-items-center w-8 h-8 rounded-lg border border-valor-border text-slate-400 hover:text-white hover:border-amber-500/50 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-4">{children}</div>
+          </motion.aside>
+        </>
+      )}
+    </AnimatePresence>
   )
 }

@@ -5,9 +5,10 @@ import { motion } from 'framer-motion'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useActiveWalletClient } from '@/hooks/useActiveWalletClient'
 import { formatGDollarNumber } from '@/utils/format'
+import { ArrowUpRight, CalendarPlus, ChevronRight, Coins, Megaphone, Undo2 } from 'lucide-react'
 import {
   BTN_DANGER, BTN_GHOST, BTN_GOLD, BTN_OK, BTN_WARN, INPUT, LABEL, PANEL, PILL, PILL_ON, SUBPANEL,
-  Badge, PageHeader, PanelToggle, Stat, compact,
+  Badge, Drawer, PageBanner, SectionTitle, Stat, compact,
 } from '@/components/admin/ui'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? ''
@@ -206,10 +207,6 @@ function loadSession(): AdminSession | null {
   } catch {
     return null
   }
-}
-
-function StatTile({ label, value, unit }: { label: string; value: string; unit?: string }) {
-  return <Stat label={label} value={value} unit={unit} />
 }
 
 export default function AdminPage() {
@@ -751,257 +748,450 @@ export default function AdminPage() {
     )
   }
 
+  // Presentation helpers for the season rail and banner (no state, no requests).
+  const seasonStatus = (sn: Season) => {
+    const now = Date.now()
+    const opens = new Date(sn.starts_at).getTime()
+    const closes = sn.ends_at ? new Date(sn.ends_at).getTime() : null
+    if (opens > now) return { label: 'Upcoming', tone: 'gold' as const }
+    if (closes === null) return { label: 'Open', tone: 'green' as const }
+    if (closes >= now) return { label: 'Live', tone: 'green' as const }
+    return { label: 'Closed', tone: 'slate' as const }
+  }
+  const fmtDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const daysFromNow = (iso: string) => Math.ceil((new Date(iso).getTime() - Date.now()) / 864e5)
+  const ago = (iso: string) => {
+    const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
+    return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`
+  }
+  const liveSeason = seasons.find((sn) => ['Live', 'Open'].includes(seasonStatus(sn).label))
+  const nextSeason = seasons
+    .filter((sn) => new Date(sn.starts_at).getTime() > Date.now())
+    .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())[0]
+
   return (
-    <div className="flex flex-col gap-6 max-w-3xl w-full">
-      <PageHeader
+    <div className="flex flex-col gap-8 w-full">
+      <PageBanner
         kicker="Operations"
         title="Season ops"
         sub="Schedule seasons, set prize pools and run payouts. These controls move real G$, so every payout shows its exact transfer before you confirm."
+        actions={<button onClick={() => setShowScheduler(true)} className={`${BTN_GOLD} px-4 py-2.5 text-sm`}><CalendarPlus size={15} /> Schedule a season</button>}
+        aside={<>
+          <div className="rounded-xl border border-valor-border/80 bg-black/45 backdrop-blur px-4 py-3">
+            <p className="text-[9px] uppercase tracking-[0.22em] font-bold text-slate-500">Live now</p>
+            {liveSeason ? (
+              <>
+                <p className="font-[family-name:var(--font-family-display)] font-black text-white text-lg leading-tight mt-1 truncate">{liveSeason.name}</p>
+                <p className="text-[11px] text-emerald-400 mt-0.5">{liveSeason.ends_at ? `closes in ${Math.max(0, daysFromNow(liveSeason.ends_at))}d` : 'open-ended'}</p>
+              </>
+            ) : <p className="text-sm text-slate-500 mt-1.5">No season is running</p>}
+          </div>
+          <div className="rounded-xl border border-valor-border/80 bg-black/45 backdrop-blur px-4 py-3">
+            <p className="text-[9px] uppercase tracking-[0.22em] font-bold text-slate-500">Up next</p>
+            {nextSeason ? (
+              <>
+                <p className="font-[family-name:var(--font-family-display)] font-black text-white text-lg leading-tight mt-1 truncate">{nextSeason.name}</p>
+                <p className="text-[11px] text-amber-400 mt-0.5">opens in {Math.max(0, daysFromNow(nextSeason.starts_at))}d</p>
+              </>
+            ) : <p className="text-sm text-slate-500 mt-1.5">Nothing scheduled</p>}
+          </div>
+        </>}
       />
 
-      {/* Season picker */}
-      <div className={`${PANEL} flex flex-col gap-3`}>
-        <p className={LABEL}>Season</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setSelectedSeason('all')}
-            className={selectedSeason === 'all' ? PILL_ON : PILL}
-          >
-            All time
-          </button>
-          {seasons.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setSelectedSeason(s.id)}
-              className={selectedSeason === s.id ? PILL_ON : PILL}
-            >
-              {s.name}{!s.ends_at ? ' · open' : ''}
-            </button>
-          ))}
-        </div>
-
-        {/* Controls for whichever season is selected. Open-early + reset-progress are
-            what make it safe to play a season through BEFORE it goes live: progress
-            persists, so a test run has to be wiped or the tester starts ahead. */}
-        {selectedSeason !== 'all' && (() => {
-          const sn = seasons.find((x) => x.id === selectedSeason)
-          if (!sn) return null
-          const now = Date.now()
-          const opensAt = new Date(sn.starts_at).getTime()
-          const closesAt = sn.ends_at ? new Date(sn.ends_at).getTime() : null
-          const live = opensAt <= now && (closesAt === null || closesAt >= now)
-          const upcoming = opensAt > now
-          return (
-            <div className={`${SUBPANEL} flex flex-col gap-2 mb-3`}>
-              <p className="text-xs text-slate-400">
-                <span className="text-white font-bold">{sn.name}</span>
-                {' · '}
-                {live ? <span className="text-emerald-400">LIVE now</span>
-                  : upcoming ? <span className="text-amber-400">opens {new Date(sn.starts_at).toLocaleString()}</span>
-                  : <span className="text-slate-500">closed</span>}
-                {closesAt && <> · closes {new Date(sn.ends_at as string).toLocaleString()}</>}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {upcoming && (
-                  <button
-                    onClick={() => handleReschedule(sn, new Date(Date.now() - 60_000).toISOString())}
-                    disabled={busy}
-                    className={BTN_OK}
-                  >
-                    Open now (for testing)
-                  </button>
-                )}
-                {live && (
-                  <button
-                    onClick={() => {
-                      const back = window.prompt('Set the real opening time (your local time, e.g. 2026-07-27T00:00)', '2026-07-27T00:00')
-                      if (back) handleReschedule(sn, new Date(back).toISOString())
-                    }}
-                    disabled={busy}
-                    className={BTN_GHOST}
-                  >
-                    Close back to scheduled start
-                  </button>
-                )}
-                {closesAt && closesAt > now && (
-                  <button
-                    onClick={() => {
-                      const to = window.prompt('Set the new closing time (your local time, e.g. 2026-11-14T16:00)', '2026-11-14T16:00')
-                      if (!to) return
-                      const t = new Date(to)
-                      if (Number.isNaN(t.getTime())) { window.alert('That is not a valid date and time.'); return }
-                      if (window.confirm(`Close "${sn.name}" at ${t.toLocaleString()}?`)) void handleReschedule(sn, sn.starts_at, t.toISOString())
-                    }}
-                    disabled={busy}
-                    className={BTN_GHOST}
-                  >
-                    Change closing time
-                  </button>
-                )}
-                <button
-                  onClick={() => handleResetProgress(sn)}
-                  disabled={busy}
-                  className={BTN_WARN}
-                >
-                  Wipe test progress
-                </button>
-                <button
-                  onClick={() => handleDeleteSeason(sn)}
-                  disabled={busy}
-                  className={BTN_DANGER}
-                >
-                  Delete season
-                </button>
-              </div>
-
-              {/* Sets the prize pool AND split this season pays out of. The G$ itself
-                  has to already be sitting in the on-chain ValorRewardPool
-                  (0x12a3f711…F1f4) — this only tells the season how much of it to
-                  pay and to whom. Re-running this overwrites the split, so it's
-                  safe to use again if the shape needs to change before payout. */}
-              <div className="flex flex-col gap-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="flex flex-col gap-1">
-                    <span className={LABEL}>Winners paid (tier 1)</span>
-                    <input type="number" min={1} max={20} value={fundTier1Count}
-                      onChange={(e) => setFundTier1Count(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-                      className={INPUT} />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className={LABEL}>G$ each</span>
-                    <input type="number" min={0} step={1000} value={fundTier1Each}
-                      onChange={(e) => setFundTier1Each(Math.max(0, Number(e.target.value) || 0))}
-                      className={INPUT} />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className={LABEL}>Next winners (tier 2, optional)</span>
-                    <input type="number" min={0} max={20} value={fundTier2Count}
-                      onChange={(e) => setFundTier2Count(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
-                      className={INPUT} />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className={LABEL}>G$ each</span>
-                    <input type="number" min={0} step={1000} value={fundTier2Each}
-                      onChange={(e) => setFundTier2Each(Math.max(0, Number(e.target.value) || 0))}
-                      className={INPUT} />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className={LABEL}>Next winners (tier 3, optional)</span>
-                    <input type="number" min={0} max={20} value={fundTier3Count}
-                      onChange={(e) => setFundTier3Count(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
-                      className={INPUT} />
-                  </label>
-                  <label className="flex flex-col gap-1">
-                    <span className={LABEL}>G$ each</span>
-                    <input type="number" min={0} step={500} value={fundTier3Each}
-                      onChange={(e) => setFundTier3Each(Math.max(0, Number(e.target.value) || 0))}
-                      className={INPUT} />
-                  </label>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[11px] text-slate-400">
-                    Pool <span className="text-amber-400 font-bold">{fundPool.toLocaleString()} G$</span>
-                    {sn.prize_pool_g > 0 && sn.prize_pool_g !== fundPool && (
-                      <span className="text-slate-600"> (currently {sn.prize_pool_g.toLocaleString()} G$)</span>
-                    )}
-                  </p>
-                  <button
-                    onClick={handleFundSeason}
-                    disabled={seasonFunding || fundPool <= 0}
-                    className={BTN_GOLD}
-                  >
-                    {seasonFunding ? 'Setting…' : 'Set pool & split'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )
-        })()}
-        {/* Prize payout. Shows the exact transfer before it happens — who, how much,
-            how many transactions, and whether the pool can actually cover it — so
-            the button is a confirmation rather than a leap. Blocked until the season
-            has genuinely closed: winners freeze on the first run and each chunk burns
-            a one-shot on-chain reference, so an early payout cannot be corrected. */}
-        {preview && preview.winner_count > 0 && (
-          <div className="mb-3 p-3.5 rounded-xl border border-amber-500/35 bg-amber-500/[0.04]">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400">Prize payout</p>
-              {preview.season.payout_status === 'paid' && (
-                <Badge tone="green">Paid</Badge>
-              )}
-            </div>
-
-            <div className="max-h-56 overflow-y-auto rounded-lg mb-2" style={{ background: 'rgba(0,0,0,0.3)' }}>
-              {preview.winners.map((w) => (
-                <div key={w.wallet_address} className="flex items-center gap-2 px-2.5 py-1.5 text-xs border-b last:border-0" style={{ borderColor: 'rgba(42,42,58,0.5)' }}>
-                  <span className="w-5 text-slate-500 font-bold tabular-nums">{w.rank}</span>
-                  <span className="flex-1 truncate text-slate-200">
-                    {w.username || `${w.wallet_address.slice(0, 6)}…${w.wallet_address.slice(-4)}`}
-                  </span>
-                  <span className="text-slate-500 tabular-nums">{w.waves}w</span>
-                  <span className="text-amber-300 font-bold tabular-nums">{w.amount_g.toLocaleString()} G$</span>
-                  {!!w.sent_g && w.status !== 'paid' && (
-                    <span className="text-emerald-400/80 text-[10px] tabular-nums">{w.sent_g.toLocaleString()} sent</span>
-                  )}
-                  {w.status === 'paid'
-                    ? <span className="text-emerald-400 text-[10px] font-bold w-12 text-right">PAID</span>
-                    : w.status === 'failed'
-                    ? <span className="text-red-400 text-[10px] font-bold w-12 text-right">FAILED</span>
-                    : <span className="text-slate-600 text-[10px] w-12 text-right">—</span>}
-                </div>
-              ))}
-            </div>
-
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 mb-2">
-              <span>{preview.winner_count} winners</span>
-              <span className="text-slate-200 font-bold">{preview.unpaid_g.toLocaleString()} G$ left to send</span>
-              <span>{preview.tx_count} transactions</span>
-              {preview.pool_balance_g !== null && (
-                <span className={preview.funded ? 'text-emerald-400' : 'text-red-400'}>
-                  pool {preview.pool_balance_g.toLocaleString()} G$
-                </span>
-              )}
-              {preview.relay_celo !== null && (
-                <span className={preview.relay_celo > 0.1 ? '' : 'text-red-400'}>
-                  gas {preview.relay_celo.toFixed(2)} CELO
-                </span>
-              )}
-            </div>
-
-            {!preview.season.closed && (
-              <p className="text-[11px] text-amber-300/90 mb-2">
-                Season is still running. Payout unlocks when it closes
-                {preview.season.ends_at && ` — ${new Date(preview.season.ends_at).toLocaleString()}`}.
-              </p>
-            )}
-            {preview.season.closed && !preview.funded && preview.unpaid_g > 0 && (
-              <p className="text-[11px] text-red-400 mb-2">
-                Reward pool holds {preview.pool_balance_g?.toLocaleString() ?? '?'} G$ but {preview.unpaid_g.toLocaleString()} G$ is still left to send. Top it up before paying, or the run stops part-way.
-              </p>
-            )}
-            {(preview.pool_address || preview.relay_address) && (
-              <div className="text-[10px] text-slate-500 mb-2 break-all space-y-0.5">
-                {preview.pool_address && <p>Reward pool: <span className="text-slate-300 select-all">{preview.pool_address}</span></p>}
-                {preview.relay_address && <p>Relay (pays gas): <span className="text-slate-300 select-all">{preview.relay_address}</span></p>}
-              </div>
-            )}
-
-            <button
-              onClick={handlePayout}
-              disabled={paying || busy || !preview.can_pay}
-              className={`${BTN_GOLD} w-full py-2.5`}
-            >
-              {paying ? 'Paying… this takes a few minutes'
-                : preview.unpaid_g === 0 ? 'All winners paid'
-                : !preview.season.closed ? 'Locked until the season closes'
-                : `Pay ${preview.winners.filter((w) => w.status !== 'paid').length} winners · ${preview.unpaid_g.toLocaleString()} G$`}
-            </button>
+      {/* Overview: the numbers first, for the selected season or all time */}
+      <section className="flex flex-col gap-3">
+        <SectionTitle right={stats ? <DownloadButton onClick={handleDownloadStats} /> : undefined}>
+          {stats ? `${stats.season_name ?? 'All-time'} overview` : 'Overview'}
+        </SectionTitle>
+        {stats ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Stat label="New players" count={stats.new_players} />
+            <Stat label="Verified players" count={stats.verified_players} />
+            <Stat label="Played players" count={stats.played_players} />
+            <Stat label="Active players" count={stats.active_players} />
+            <Stat label="Total battles" count={stats.total_battles} />
+            <Stat label="G$ awarded" count={stats.total_g_awarded} format={(v) => compact(v)} unit="G$" />
+            <Stat label="G$ volume moved" count={stats.total_g_volume} format={(v) => compact(v)} unit="G$" />
+            <Stat label="G$ transferred out" count={stats.total_g_transferred_out} format={(v) => compact(v)} unit="G$" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => <div key={i} className="h-[88px] rounded-xl border border-valor-border bg-white/[0.03] animate-pulse" />)}
           </div>
         )}
+      </section>
 
-        <div className="flex flex-col gap-3 pt-4 border-t border-valor-border/70">
-          <PanelToggle open={showScheduler} onClick={() => setShowScheduler((v) => !v)} title="Schedule a season" hint="Create a scheduled window and prize split" />
-          {showScheduler && (<>
+      <div className="grid lg:grid-cols-12 gap-6 items-start">
+        {/* ── Seasons ── */}
+        <div className="lg:col-span-8 flex flex-col gap-6 min-w-0">
+          <section className="flex flex-col gap-3">
+            <SectionTitle>Seasons</SectionTitle>
+            <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 snap-x [mask-image:linear-gradient(to_right,#000_93%,transparent)]">
+              <button
+                onClick={() => setSelectedSeason('all')}
+                aria-pressed={selectedSeason === 'all'}
+                className={`snap-start shrink-0 w-48 text-left rounded-xl border p-3.5 transition ${selectedSeason === 'all' ? 'border-amber-500/60 bg-amber-500/[0.07] shadow-[0_10px_30px_-14px_rgba(234,179,8,0.55)]' : 'border-valor-border bg-black/25 hover:border-slate-500'}`}
+              >
+                <Badge tone="slate">All seasons</Badge>
+                <p className="mt-2.5 font-[family-name:var(--font-family-display)] font-black text-white text-base leading-tight">All time</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Every season combined</p>
+              </button>
+              {seasons.map((sn) => {
+                const st = seasonStatus(sn)
+                const sel = selectedSeason === sn.id
+                return (
+                  <button
+                    key={sn.id}
+                    onClick={() => setSelectedSeason(sn.id)}
+                    aria-pressed={sel}
+                    className={`snap-start shrink-0 w-56 text-left rounded-xl border p-3.5 transition ${sel ? 'border-amber-500/60 bg-amber-500/[0.07] shadow-[0_10px_30px_-14px_rgba(234,179,8,0.55)]' : 'border-valor-border bg-black/25 hover:border-slate-500'}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <Badge tone={st.tone}>{st.label}</Badge>
+                      {sn.payout_status === 'paid' && <span className="text-[10px] font-bold text-emerald-400 tracking-wider">PAID</span>}
+                    </div>
+                    <p className="mt-2.5 font-[family-name:var(--font-family-display)] font-black text-white text-base leading-tight truncate">{sn.name}</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">{fmtDay(sn.starts_at)} → {sn.ends_at ? fmtDay(sn.ends_at) : 'open-ended'}</p>
+                    <p className="mt-2.5 text-sm font-bold tabular-nums text-amber-300">{sn.prize_pool_g.toLocaleString()} <span className="text-[10px] text-slate-500 font-semibold">G$ pool</span></p>
+                  </button>
+                )
+              })}
+            </div>
+          </section>
+
+          {selectedSeason === 'all' ? (
+            <div className={`${PANEL} text-center py-14 flex flex-col items-center gap-3`}>
+              <span className="grid place-items-center w-12 h-12 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300"><CalendarPlus size={22} /></span>
+              <p className="font-[family-name:var(--font-family-display)] font-black text-white text-xl">Pick a season to manage it</p>
+              <p className="text-sm text-slate-500 max-w-sm">Choose one above to open its timeline, set the prize pool and split, check the payout and control when it runs. The overview above switches with it.</p>
+            </div>
+          ) : (() => {
+            const sn = seasons.find((x) => x.id === selectedSeason)
+            if (!sn) return null
+            const now = Date.now()
+            const opensAt = new Date(sn.starts_at).getTime()
+            const closesAt = sn.ends_at ? new Date(sn.ends_at).getTime() : null
+            const live = opensAt <= now && (closesAt === null || closesAt >= now)
+            const upcoming = opensAt > now
+
+            if (!sn) return null
+            const span = closesAt ? closesAt - opensAt : 0
+            const pct = closesAt && span > 0 ? Math.max(0, Math.min(100, ((now - opensAt) / span) * 100)) : live ? 100 : 0
+            const st = seasonStatus(sn)
+            return (
+              <div className={`${PANEL} flex flex-col gap-6`}>
+                <div className="flex items-start justify-between gap-5 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap"><Badge tone={st.tone}>{st.label}</Badge>{sn.payout_status === 'paid' && <Badge tone="green">Paid out</Badge>}</div>
+                    <h2 className="font-[family-name:var(--font-family-display)] font-black text-white text-3xl leading-tight mt-2">{sn.name}</h2>
+                    <p className="text-xs text-slate-400">
+                                    {live ? <span className="text-emerald-400">LIVE now</span>
+                      : upcoming ? <span className="text-amber-400">opens {new Date(sn.starts_at).toLocaleString()}</span>
+                      : <span className="text-slate-500">closed</span>}
+                    {closesAt && <> · closes {new Date(sn.ends_at as string).toLocaleString()}</>}
+              </p>
+                  </div>
+                  <div className="sm:text-right">
+                    <p className={LABEL}>Prize pool</p>
+                    <p className="font-[family-name:var(--font-family-display)] font-black text-4xl leading-none mt-1.5 tabular-nums bg-linear-to-b from-amber-100 via-amber-300 to-amber-500 bg-clip-text text-transparent">
+                      {sn.prize_pool_g.toLocaleString()}<span className="ml-1.5 font-sans text-sm font-semibold text-slate-500">G$</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="h-2 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div className="h-full rounded-full bg-linear-to-r from-amber-700 via-amber-400 to-amber-200 transition-[width] duration-700" style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[11px] text-slate-500 mt-1.5">
+                    <span>Opens {new Date(sn.starts_at).toLocaleString()}</span>
+                    <span>{closesAt ? `Closes ${new Date(closesAt).toLocaleString()}` : 'Open-ended'}</span>
+                  </div>
+                </div>
+
+                <div className="grid xl:grid-cols-[1.2fr_1fr] gap-5 items-stretch">
+                  <div className="flex flex-col gap-2.5">
+                    {preview && preview.winner_count > 0 && (
+                      <div className="p-3.5 rounded-xl border border-amber-500/35 bg-amber-500/[0.04] h-full">
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400">Prize payout</p>
+                          {preview.season.payout_status === 'paid' && (
+                            <Badge tone="green">Paid</Badge>
+                          )}
+                        </div>
+
+                        <div className="max-h-56 overflow-y-auto rounded-lg mb-2" style={{ background: 'rgba(0,0,0,0.3)' }}>
+                          {preview.winners.map((w) => (
+                            <div key={w.wallet_address} className="flex items-center gap-2 px-2.5 py-1.5 text-xs border-b last:border-0" style={{ borderColor: 'rgba(42,42,58,0.5)' }}>
+                              <span className="w-5 text-slate-500 font-bold tabular-nums">{w.rank}</span>
+                              <span className="flex-1 truncate text-slate-200">
+                                {w.username || `${w.wallet_address.slice(0, 6)}…${w.wallet_address.slice(-4)}`}
+                              </span>
+                              <span className="text-slate-500 tabular-nums">{w.waves}w</span>
+                              <span className="text-amber-300 font-bold tabular-nums">{w.amount_g.toLocaleString()} G$</span>
+                              {!!w.sent_g && w.status !== 'paid' && (
+                                <span className="text-emerald-400/80 text-[10px] tabular-nums">{w.sent_g.toLocaleString()} sent</span>
+                              )}
+                              {w.status === 'paid'
+                                ? <span className="text-emerald-400 text-[10px] font-bold w-12 text-right">PAID</span>
+                                : w.status === 'failed'
+                                ? <span className="text-red-400 text-[10px] font-bold w-12 text-right">FAILED</span>
+                                : <span className="text-slate-600 text-[10px] w-12 text-right">—</span>}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 mb-2">
+                          <span>{preview.winner_count} winners</span>
+                          <span className="text-slate-200 font-bold">{preview.unpaid_g.toLocaleString()} G$ left to send</span>
+                          <span>{preview.tx_count} transactions</span>
+                          {preview.pool_balance_g !== null && (
+                            <span className={preview.funded ? 'text-emerald-400' : 'text-red-400'}>
+                              pool {preview.pool_balance_g.toLocaleString()} G$
+                            </span>
+                          )}
+                          {preview.relay_celo !== null && (
+                            <span className={preview.relay_celo > 0.1 ? '' : 'text-red-400'}>
+                              gas {preview.relay_celo.toFixed(2)} CELO
+                            </span>
+                          )}
+                        </div>
+
+                        {!preview.season.closed && (
+                          <p className="text-[11px] text-amber-300/90 mb-2">
+                            Season is still running. Payout unlocks when it closes
+                            {preview.season.ends_at && ` — ${new Date(preview.season.ends_at).toLocaleString()}`}.
+                          </p>
+                        )}
+                        {preview.season.closed && !preview.funded && preview.unpaid_g > 0 && (
+                          <p className="text-[11px] text-red-400 mb-2">
+                            Reward pool holds {preview.pool_balance_g?.toLocaleString() ?? '?'} G$ but {preview.unpaid_g.toLocaleString()} G$ is still left to send. Top it up before paying, or the run stops part-way.
+                          </p>
+                        )}
+                        {(preview.pool_address || preview.relay_address) && (
+                          <div className="text-[10px] text-slate-500 mb-2 break-all space-y-0.5">
+                            {preview.pool_address && <p>Reward pool: <span className="text-slate-300 select-all">{preview.pool_address}</span></p>}
+                            {preview.relay_address && <p>Relay (pays gas): <span className="text-slate-300 select-all">{preview.relay_address}</span></p>}
+                          </div>
+                        )}
+
+                        <button
+                          onClick={handlePayout}
+                          disabled={paying || busy || !preview.can_pay}
+                          className={`${BTN_GOLD} w-full py-2.5`}
+                        >
+                          {paying ? 'Paying… this takes a few minutes'
+                            : preview.unpaid_g === 0 ? 'All winners paid'
+                            : !preview.season.closed ? 'Locked until the season closes'
+                            : `Pay ${preview.winners.filter((w) => w.status !== 'paid').length} winners · ${preview.unpaid_g.toLocaleString()} G$`}
+                        </button>
+                      </div>
+                    )}
+                    {!(preview && preview.winner_count > 0) && (
+                      <div className="rounded-xl border border-dashed border-valor-border p-5 text-sm text-slate-500 h-full grid place-items-center text-center">
+                        <span><span className="block text-[10px] uppercase tracking-[0.3em] font-bold text-slate-400 mb-1.5">Prize payout</span>Winners and the exact transfer appear here once this season has scores.</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2.5">
+                    <div className={`${SUBPANEL} flex flex-col gap-3 h-full p-3.5`}>
+                      <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-slate-400">Pool &amp; split</p>
+                      <div className="flex flex-col gap-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="flex flex-col gap-1">
+                          <span className={LABEL}>Winners paid (tier 1)</span>
+                          <input type="number" min={1} max={20} value={fundTier1Count}
+                            onChange={(e) => setFundTier1Count(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                            className={INPUT} />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className={LABEL}>G$ each</span>
+                          <input type="number" min={0} step={1000} value={fundTier1Each}
+                            onChange={(e) => setFundTier1Each(Math.max(0, Number(e.target.value) || 0))}
+                            className={INPUT} />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className={LABEL}>Next winners (tier 2, optional)</span>
+                          <input type="number" min={0} max={20} value={fundTier2Count}
+                            onChange={(e) => setFundTier2Count(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
+                            className={INPUT} />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className={LABEL}>G$ each</span>
+                          <input type="number" min={0} step={1000} value={fundTier2Each}
+                            onChange={(e) => setFundTier2Each(Math.max(0, Number(e.target.value) || 0))}
+                            className={INPUT} />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className={LABEL}>Next winners (tier 3, optional)</span>
+                          <input type="number" min={0} max={20} value={fundTier3Count}
+                            onChange={(e) => setFundTier3Count(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
+                            className={INPUT} />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className={LABEL}>G$ each</span>
+                          <input type="number" min={0} step={500} value={fundTier3Each}
+                            onChange={(e) => setFundTier3Each(Math.max(0, Number(e.target.value) || 0))}
+                            className={INPUT} />
+                        </label>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[11px] text-slate-400">
+                          Pool <span className="text-amber-400 font-bold">{fundPool.toLocaleString()} G$</span>
+                          {sn.prize_pool_g > 0 && sn.prize_pool_g !== fundPool && (
+                            <span className="text-slate-600"> (currently {sn.prize_pool_g.toLocaleString()} G$)</span>
+                          )}
+                        </p>
+                        <button
+                          onClick={handleFundSeason}
+                          disabled={seasonFunding || fundPool <= 0}
+                          className={BTN_GOLD}
+                        >
+                          {seasonFunding ? 'Setting…' : 'Set pool & split'}
+                        </button>
+                      </div>
+              </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-red-500/15 bg-red-500/[0.025] p-4 flex flex-col gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.22em] font-bold text-slate-400">Season controls</p>
+                    <p className="text-[11px] text-slate-600 mt-0.5">Open-early and wipe are for testing a season before it goes live, because progress persists.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {upcoming && (
+                      <button
+                        onClick={() => handleReschedule(sn, new Date(Date.now() - 60_000).toISOString())}
+                        disabled={busy}
+                        className={BTN_OK}
+                      >
+                        Open now (for testing)
+                      </button>
+                    )}
+                    {live && (
+                      <button
+                        onClick={() => {
+                          const back = window.prompt('Set the real opening time (your local time, e.g. 2026-07-27T00:00)', '2026-07-27T00:00')
+                          if (back) handleReschedule(sn, new Date(back).toISOString())
+                        }}
+                        disabled={busy}
+                        className={BTN_GHOST}
+                      >
+                        Close back to scheduled start
+                      </button>
+                    )}
+                    {closesAt && closesAt > now && (
+                      <button
+                        onClick={() => {
+                          const to = window.prompt('Set the new closing time (your local time, e.g. 2026-11-14T16:00)', '2026-11-14T16:00')
+                          if (!to) return
+                          const t = new Date(to)
+                          if (Number.isNaN(t.getTime())) { window.alert('That is not a valid date and time.'); return }
+                          if (window.confirm(`Close "${sn.name}" at ${t.toLocaleString()}?`)) void handleReschedule(sn, sn.starts_at, t.toISOString())
+                        }}
+                        disabled={busy}
+                        className={BTN_GHOST}
+                      >
+                        Change closing time
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleResetProgress(sn)}
+                      disabled={busy}
+                      className={BTN_WARN}
+                    >
+                      Wipe test progress
+                    </button>
+                    <button
+                      onClick={() => handleDeleteSeason(sn)}
+                      disabled={busy}
+                      className={BTN_DANGER}
+                    >
+                      Delete season
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+        </div>
+
+        {/* ── Right rail ── */}
+        <aside className="lg:col-span-4 flex flex-col gap-6 min-w-0 lg:sticky lg:top-24">
+          <section className={`${PANEL} flex flex-col gap-3`}>
+            <p className="text-[11px] uppercase tracking-[0.22em] font-bold text-slate-400">Tools</p>
+            <button onClick={() => setShowScheduler(true)} className="group flex items-center gap-3 w-full text-left rounded-xl border border-valor-border/80 bg-black/25 px-3.5 py-3 transition hover:border-amber-500/45 hover:bg-amber-500/[0.04]">
+              <span className="grid place-items-center w-9 h-9 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 shrink-0"><CalendarPlus size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-bold text-white">Schedule a season</span>
+                <span className="block text-[11px] text-slate-500">Window, prize pool and split</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-600 group-hover:text-amber-400 transition-colors shrink-0" />
+            </button>
+            <button onClick={() => setShowReferralCampaigns(true)} className="group flex items-center gap-3 w-full text-left rounded-xl border border-valor-border/80 bg-black/25 px-3.5 py-3 transition hover:border-amber-500/45 hover:bg-amber-500/[0.04]">
+              <span className="grid place-items-center w-9 h-9 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 shrink-0"><Megaphone size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-bold text-white">Referral campaigns</span>
+                <span className="block text-[11px] text-slate-500">Fund and pay the referral race</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-600 group-hover:text-amber-400 transition-colors shrink-0" />
+            </button>
+            <button onClick={() => setShowGrants(true)} className="group flex items-center gap-3 w-full text-left rounded-xl border border-valor-border/80 bg-black/25 px-3.5 py-3 transition hover:border-amber-500/45 hover:bg-amber-500/[0.04]">
+              <span className="grid place-items-center w-9 h-9 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 shrink-0"><Coins size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-bold text-white">One-off grants</span>
+                <span className="block text-[11px] text-slate-500">Pay wallets once, never twice</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-600 group-hover:text-amber-400 transition-colors shrink-0" />
+            </button>
+            <button onClick={() => setShowVoidDuel(true)} className="group flex items-center gap-3 w-full text-left rounded-xl border border-valor-border/80 bg-black/25 px-3.5 py-3 transition hover:border-amber-500/45 hover:bg-amber-500/[0.04]">
+              <span className="grid place-items-center w-9 h-9 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 shrink-0"><Undo2 size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-bold text-white">Void a stuck duel</span>
+                <span className="block text-[11px] text-slate-500">Refund both stakes</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-600 group-hover:text-amber-400 transition-colors shrink-0" />
+            </button>
+          </section>
+
+          <section className={`${PANEL} flex flex-col gap-3`}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] uppercase tracking-[0.22em] font-bold text-slate-400">On-chain activity</p>
+              <DownloadButton onClick={handleDownloadActivity} disabled={busy} />
+            </div>
+            {onchain.length === 0 ? (
+              <p className="text-slate-600 text-xs">No on-chain activity yet.</p>
+            ) : (
+              <div className="flex flex-col gap-1.5 max-h-[30rem] overflow-y-auto -mr-1 pr-1">
+                {onchain.map((r) => (
+                  <a
+                    key={r.tx_hash}
+                    href={`https://celoscan.io/tx/${r.tx_hash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-valor-border/70 bg-black/20 hover:border-amber-500/40 hover:bg-white/[0.03] transition-colors"
+                  >
+                    <span className="grid place-items-center w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-300 shrink-0"><ArrowUpRight size={14} /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-bold text-slate-200 truncate">{KIND_LABEL[r.kind] ?? r.kind}</span>
+                      <span className="block text-[11px] text-slate-500 font-mono truncate">{r.wallet.slice(0, 8)}…{r.wallet.slice(-4)}</span>
+                    </span>
+                    <span className="text-right shrink-0">
+                      {r.detail && <span className="block text-xs font-bold text-amber-300 tabular-nums">{r.kind === 'mission_record' ? `OP ${r.detail}` : `${formatGDollarNumber(Number(r.detail))} G$`}</span>}
+                      <span className="block text-[10px] text-slate-600">{ago(r.created_at)}</span>
+                    </span>
+                  </a>
+                ))}
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
+
+      {/* ── Tool drawers: same forms and handlers as before, in slide-over panels ── */}
+      <Drawer open={showScheduler} onClose={() => setShowScheduler(false)} kicker="Season ops" title="Schedule a season" sub="Create a scheduled window and prize split.">
           <input
             type="text"
             value={newSeasonName}
@@ -1083,16 +1273,13 @@ export default function AdminPage() {
               </button>
             )}
           </div>
-          </>)}
-        </div>
-      </div>
 
-      {/* Referral campaigns — fund a prize pool, pay it out to the referral
+      </Drawer>
+
+      {/* Referral campaigns: fund a prize pool, pay it out to the referral
           leaderboard once closed. Referrals stopped minting G$ on signup
           (2026-08-25); this is now the only way a referral ever pays. */}
-      <div className={`${PANEL} flex flex-col gap-3`}>
-        <PanelToggle open={showReferralCampaigns} onClick={() => setShowReferralCampaigns((v) => !v)} title="Referral campaigns" hint="Fund a prize pool and pay the referral leaderboard" />
-        {showReferralCampaigns && (<>
+      <Drawer open={showReferralCampaigns} onClose={() => setShowReferralCampaigns(false)} kicker="Season ops" title="Referral campaigns" sub="Fund a prize pool and pay the referral leaderboard.">
           {referralCampaigns.length === 0 ? (
             <p className="text-slate-600 text-xs">No referral campaigns yet.</p>
           ) : (
@@ -1214,13 +1401,11 @@ export default function AdminPage() {
           {referralPreview && referralPreview.winner_count === 0 && (
             <p className="text-slate-600 text-xs">No referrals recorded in this campaign&apos;s window yet.</p>
           )}
-        </>)}
-      </div>
 
-      {/* One-off grants — bounties, external challenge prizes */}
-      <div className={`${PANEL} flex flex-col gap-3`}>
-        <PanelToggle open={showGrants} onClick={() => setShowGrants((v) => !v)} title="One-off grants (bounties, challenge prizes)" hint="Pay specific wallets once, never twice" />
-        {showGrants && (<>
+      </Drawer>
+
+      {/* One-off grants: bounties, external challenge prizes */}
+      <Drawer open={showGrants} onClose={() => setShowGrants(false)} kicker="Season ops" title="One-off grants" sub="Bounties and challenge prizes. Paid once per wallet and reason.">
           <textarea
             value={grantWallets}
             onChange={(e) => setGrantWallets(e.target.value)}
@@ -1272,13 +1457,11 @@ export default function AdminPage() {
               ))}
             </div>
           )}
-        </>)}
-      </div>
+
+      </Drawer>
 
       {/* Stuck Face-Off duel recovery */}
-      <div className={`${PANEL} flex flex-col gap-3`}>
-        <PanelToggle open={showVoidDuel} onClick={() => setShowVoidDuel((v) => !v)} title="Void a stuck duel (refund both stakes)" hint="Recover a Face-Off duel stuck at accepted" />
-        {showVoidDuel && (<>
+      <Drawer open={showVoidDuel} onClose={() => setShowVoidDuel(false)} kicker="Recovery" title="Void a stuck duel" sub="Refund both stakes of a Face-Off duel stuck at accepted.">
           <p className="text-xs text-slate-500">
             For a Face-Off duel stuck at &quot;accepted&quot; with no live match and no resolution — e.g. a
             player who disconnected and never reconnected before this existed, or the arena crashed mid-match.
@@ -1305,65 +1488,8 @@ export default function AdminPage() {
               {voidResult.message}
             </p>
           )}
-        </>)}
-      </div>
 
-      {/* Stats */}
-      {stats && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-[family-name:var(--font-family-display)] font-black text-white text-lg tracking-wide">
-              {stats.season_name ?? 'All-Time'} Summary
-            </h3>
-            <DownloadButton onClick={handleDownloadStats} />
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <StatTile label="New Players" value={stats.new_players.toLocaleString()} />
-            <StatTile label="Verified Players" value={stats.verified_players.toLocaleString()} />
-            <StatTile label="Played Players" value={stats.played_players.toLocaleString()} />
-            <StatTile label="Active Players" value={stats.active_players.toLocaleString()} />
-            <StatTile label="Total Battles" value={stats.total_battles.toLocaleString()} />
-            <StatTile label="G$ Awarded" value={compact(stats.total_g_awarded)} unit="G$" />
-            <StatTile label="G$ Volume Moved" value={compact(stats.total_g_volume)} unit="G$" />
-            <StatTile label="G$ Transferred Out" value={compact(stats.total_g_transferred_out)} unit="G$" />
-          </div>
-        </div>
-      )}
-
-      {/* On-chain activity — mission records + G$ moves, each linked to Celoscan */}
-      <div className={PANEL}>
-        <div className="flex items-center justify-between mb-3 gap-3">
-          <h3 className="font-[family-name:var(--font-family-display)] font-black text-white text-lg tracking-wide">On-Chain Activity</h3>
-          <div className="flex items-center gap-3">
-            <span className="text-[9px] uppercase tracking-widest text-slate-600 font-bold">Latest {onchain.length}</span>
-            <DownloadButton onClick={handleDownloadActivity} disabled={busy} />
-          </div>
-        </div>
-        {onchain.length === 0 ? (
-          <p className="text-slate-600 text-xs">No on-chain activity yet.</p>
-        ) : (
-          <div className="flex flex-col gap-1.5 max-h-96 overflow-y-auto">
-            {onchain.map((r) => (
-              <a
-                key={r.tx_hash}
-                href={`https://celoscan.io/tx/${r.tx_hash}`}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-valor-border hover:border-amber-500/40 hover:bg-white/[0.03] transition-colors text-left"
-                style={{ background: 'rgba(8,10,16,0.6)' }}
-              >
-                <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-sm shrink-0"
-                  style={{ background: 'rgba(55,208,224,0.12)', color: '#37d0e0' }}>
-                  {KIND_LABEL[r.kind] ?? r.kind}
-                </span>
-                <span className="text-xs text-slate-300 font-mono truncate flex-1">{r.wallet.slice(0, 8)}…{r.wallet.slice(-4)}</span>
-                {r.detail && <span className="text-[11px] text-slate-500 shrink-0">{r.kind === 'mission_record' ? `OP ${r.detail}` : `${formatGDollarNumber(Number(r.detail))} G$`}</span>}
-                <span className="text-[10px] text-slate-600 font-mono shrink-0">{r.tx_hash.slice(0, 8)}…</span>
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
+      </Drawer>
     </div>
   )
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { BTN_GOLD, PANEL, PageHeader, SectionTitle, SignInCard, Stat, Badge, CountUp, compact } from '@/components/admin/ui'
+import { BTN_GOLD, PANEL, PageBanner, SectionTitle, SignInCard, Stat, Badge, CountUp, compact } from '@/components/admin/ui'
 import { Explorer, Ring, Spark, type DayPoint } from '@/components/admin/charts'
 
 // Chain-only analytics, produced by the separate Analytics repo (github.com/MarvyNwaokobia/Analytics)
@@ -97,25 +97,34 @@ export default function AdminAnalyticsPage() {
   ]
 
   return (
-    <div className="flex flex-col gap-8 max-w-5xl mx-auto w-full">
-      <PageHeader
+    <div className="flex flex-col gap-8 w-full">
+      <PageBanner
         kicker="Intelligence"
         title="On-chain Analytics"
-        sub={<>Read straight from Valor&apos;s contracts on Celo{data ? `, since ${data.startDate}` : ''}. Updates every hour.</>}
+        sub={<>Read straight from Valor&apos;s contracts on Celo{data ? `, since ${data.startDate}` : ''}. Nothing here comes from our own database, so anyone can verify it on Celoscan.</>}
         actions={
-          <>
-            {data && (
-              <span className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-valor-border bg-black/30 text-[11px] font-semibold text-slate-400">
-                <span className={`w-2 h-2 rounded-full ${age > 12 ? 'bg-orange-400' : 'bg-emerald-400 animate-pulse'}`} />
-                Data as of {new Date(data.asOf).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-              </span>
-            )}
-            <button onClick={() => void load()} disabled={loading} className={BTN_GOLD}>
-              <svg className={loading ? 'animate-spin' : ''} width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
-              {loading ? 'Loading' : fetchedAt ? `Refresh · ${fetchedAt.toLocaleTimeString()}` : 'Refresh'}
-            </button>
-          </>
+          <button onClick={() => void load()} disabled={loading} className={`${BTN_GOLD} px-4 py-2.5 text-sm`}>
+            <svg className={loading ? 'animate-spin' : ''} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
+            {loading ? 'Loading' : fetchedAt ? `Refresh · ${fetchedAt.toLocaleTimeString()}` : 'Refresh'}
+          </button>
         }
+        aside={data ? (
+          <>
+            <div className="rounded-xl border border-valor-border/80 bg-black/45 backdrop-blur px-4 py-3">
+              <p className="text-[9px] uppercase tracking-[0.22em] font-bold text-slate-500">Data as of</p>
+              <p className="text-sm font-bold text-white mt-1.5 flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${age > 12 ? 'bg-orange-400' : 'bg-emerald-400 animate-pulse'}`} />
+                {new Date(data.asOf).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Refreshes every hour</p>
+            </div>
+            <div className="rounded-xl border border-valor-border/80 bg-black/45 backdrop-blur px-4 py-3">
+              <p className="text-[9px] uppercase tracking-[0.22em] font-bold text-slate-500">Season</p>
+              <p className="text-sm font-bold text-white mt-1.5 truncate">{data.season ? data.season.name : 'None configured'}</p>
+              <p className={`text-[11px] mt-0.5 ${data.season?.started ? 'text-emerald-400' : 'text-amber-400'}`}>{data.season ? (data.season.started ? 'Live' : 'Awaiting launch') : ' '}</p>
+            </div>
+          </>
+        ) : undefined}
       />
 
       {error && (
