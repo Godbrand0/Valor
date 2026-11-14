@@ -18,7 +18,7 @@ use crate::services::coop_server::ServerMsg;
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
-    CreateParty { wallet: String, #[serde(default)] name: String },
+    CreateParty { wallet: String, #[serde(default)] name: String, #[serde(default)] public: bool },
     JoinParty { code: String, wallet: String, #[serde(default)] name: String },
     StartRun,
     /// The host's `sim.snapshot()` — an opaque blob to this server, see
@@ -64,7 +64,7 @@ pub async fn coop_ws(
                         Err(_) => continue,
                     };
                     match parsed {
-                        ClientMsg::CreateParty { wallet: w, name } => {
+                        ClientMsg::CreateParty { wallet: w, name, public } => {
                             if !is_valid_wallet(&w) {
                                 send_err(&client_tx, "Invalid wallet address");
                                 continue;
@@ -72,7 +72,7 @@ pub async fn coop_ws(
                             let w = normalize_wallet(&w);
                             tracing::info!("coop_ws: {} creating a party", w);
                             wallet = Some(w.clone());
-                            let _ = server_tx.send(ServerMsg::CreateParty { wallet: w, name, tx: client_tx.clone() });
+                            let _ = server_tx.send(ServerMsg::CreateParty { wallet: w, name, tx: client_tx.clone(), public });
                         }
                         ClientMsg::JoinParty { code, wallet: w, name } => {
                             if !is_valid_wallet(&w) {

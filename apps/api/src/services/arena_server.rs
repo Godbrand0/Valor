@@ -296,6 +296,22 @@ pub enum ServerMsg {
     Spectate { duel_id: Uuid, tx: UnboundedSender<String> },
     FightStart { room_id: String },
     Tick,
+    /// Read-only: every live match right now, for the public multiplayer lobby
+    /// (`handlers/multiplayer.rs`). Answered inline from the room map, so it
+    /// never waits on a tick.
+    LiveSnapshot { reply: tokio::sync::oneshot::Sender<Vec<LiveMatch>> },
+}
+
+/// One live Face-Off as the lobby shows it: who is fighting and the duel id
+/// spectators watch it by. Nothing here is secret — `Spectate` is already
+/// "anyone with the link".
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LiveMatch {
+    pub duel_id: Uuid,
+    pub wallets: [String; 2],
+    pub elapsed_secs: u64,
+    /// A side has dropped and the room is holding for its reconnect.
+    pub paused: bool,
 }
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -397,7 +413,19 @@ impl ArenaServer {
             ServerMsg::Spectate { duel_id, tx } => self.on_spectate(duel_id, tx),
             ServerMsg::FightStart { room_id } => self.fight_start(&room_id),
             ServerMsg::Tick => self.on_tick(),
+            ServerMsg::LiveSnapshot { reply } => { let _ = reply.send(self.live_snapshot()); }
         }
+    }
+
+    fn live_snapshot(&self) -> Vec<LiveMatch> {
+        let mut out: Vec<LiveMatch> = self.rooms.values().map(|r| LiveMatch {
+            duel_id: r.duel_id,
+            wallets: [r.p1.wallet.clone(), r.p2.wallet.clone()],
+            elapsed_secs: r.started.elapsed().as_secs(),
+            paused: !r.disconnected.is_empty(),
+        }).collect();
+        out.sort_by_key(|m| m.elapsed_secs);
+        out
     }
 
     // ── Join / pairing ────────────────────────────────────────────────────────
@@ -1230,6 +1258,21 @@ mod tests {
         let _ = next_json(&mut rx1).await; // fight_start
         let _ = next_json(&mut rx2).await; // fight_start
         (rx1, rx2)
+    }
+
+    #[tokio::test]
+    async fn lobby_snapshot_lists_a_live_match_and_its_players() {
+        let mut server = new_server();
+        assert!(server.live_snapshot().is_empty());
+        let duel_id = Uuid::new_v4();
+        let (_rx1, _rx2) = paired_and_fighting(&mut server, duel_id).await;
+        let snap = server.live_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].duel_id, duel_id);
+        let mut wallets: Vec<String> = snap[0].wallets.iter().map(|w| w.to_lowercase()).collect();
+        wallets.sort();
+        assert_eq!(wallets, vec!["0xaaa", "0xbbb"]);
+        assert!(!snap[0].paused);
     }
 
     #[tokio::test]

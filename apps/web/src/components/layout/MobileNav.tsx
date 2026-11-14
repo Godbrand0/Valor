@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Home, Crosshair, User, ShoppingBag, Trophy } from 'lucide-react'
+import { Home, Crosshair, User, ShoppingBag, Trophy, Users } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
@@ -11,6 +11,7 @@ import { CLASS_DEFINITIONS } from '@/lib/classes'
 const NAV_ITEMS: { to: string; Icon: LucideIcon; label: string; exact: boolean }[] = [
   { to: '/',            Icon: Home,        label: 'Home',    exact: true  },
   { to: '/battle',      Icon: Crosshair,   label: 'Fight',   exact: false },
+  { to: '/multiplayer', Icon: Users,       label: 'Online',  exact: false },
   { to: '/profile',     Icon: User,        label: 'Profile', exact: false },
   { to: '/marketplace', Icon: ShoppingBag, label: 'Market',  exact: false },
   { to: '/leaderboard', Icon: Trophy,      label: 'Ranks',   exact: false },

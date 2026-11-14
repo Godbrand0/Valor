@@ -37,6 +37,18 @@ pub fn unregister(hub: &ChatHub, wallet: &str, conn_id: Uuid) {
     }
 }
 
+/// Every wallet with at least one live socket — i.e. who is online right now.
+/// Every signed-in client opens `/ws/chat` from the app layout (see
+/// `useChatSocket` in Layout.tsx), so this registry doubles as presence for the
+/// multiplayer lobby. Skips entries whose every sender is already closed (a tab
+/// that died before its disconnect landed).
+pub fn online_wallets(hub: &ChatHub) -> Vec<String> {
+    hub.iter()
+        .filter(|e| e.value().iter().any(|(_, tx)| !tx.is_closed()))
+        .map(|e| e.key().clone())
+        .collect()
+}
+
 /// Best-effort — a dead channel (tab closed but disconnect hasn't landed yet)
 /// is just skipped, same as `notify_wallet`'s send-and-continue in push.rs.
 pub fn send_to(hub: &ChatHub, wallet: &str, json_text: String) {

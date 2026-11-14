@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion } from 'framer-motion'
-import { Target, Crosshair, Infinity as InfinityIcon, ChevronLeft, ChevronRight, Swords, Flame } from 'lucide-react'
+import { Target, Crosshair, Infinity as InfinityIcon, ChevronLeft, ChevronRight, Swords, Flame, Users, UsersRound } from 'lucide-react'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useDuelsAvailable } from '@/hooks/useDuels'
 import { usePlayerStore } from '@/stores/usePlayerStore'
@@ -120,6 +120,70 @@ export default function BattlePage() {
           <div className="flex-1 min-w-0">
             <p className="font-display font-black text-white text-xl group-hover:text-amber-400 transition-colors">Challenge a Player</p>
             <p className="text-slate-500 text-sm mt-0.5">Search by name · Async duel · Share invite link</p>
+          </div>
+          <ChevronRight size={16} className="shrink-0 text-slate-700 group-hover:text-white transition-colors" />
+        </div>
+      </motion.button>
+
+      {/* Multiplayer lobby — every way to play with other people in one place:
+          modes, live Face-Offs to watch, open co-op parties, who's online. */}
+      <motion.button
+        onClick={() => router.push('/multiplayer')}
+        className="group relative overflow-hidden p-6 rounded-2xl border text-left transition-all"
+        style={{ background: 'rgba(8,8,14,0.9)', borderColor: 'rgba(16,185,129,0.35)' }}
+        whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
+      >
+        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ background: 'radial-gradient(ellipse 80% 80% at 20% 50%, rgba(16,185,129,0.1), transparent)' }} />
+        <div className="absolute inset-y-0 left-0 w-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ background: '#10b981' }} />
+        <div className="flex items-center gap-5 relative z-10">
+          <div className="w-14 h-14 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)' }}>
+            <Users size={28} style={{ color: '#10b981' }} strokeWidth={1.5} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="font-display font-black text-white text-xl group-hover:text-amber-400 transition-colors">Multiplayer Lobby</p>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
+                style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>
+                Live
+              </span>
+            </div>
+            <p className="text-slate-500 text-sm mt-0.5">See who’s online · watch live matches · join open parties</p>
+          </div>
+          <ChevronRight size={16} className="shrink-0 text-slate-700 group-hover:text-white transition-colors" />
+        </div>
+      </motion.button>
+
+      {/* Co-op Endless had no entry point anywhere in the app — only a typed URL
+          or a friend's invite link reached it. Free, so no duels gate. */}
+      <motion.button
+        onClick={() => router.push('/endless/coop')}
+        className="group relative overflow-hidden p-6 rounded-2xl border text-left transition-all"
+        style={{ background: 'rgba(8,8,14,0.9)', borderColor: 'rgba(16,185,129,0.35)' }}
+        whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }}
+      >
+        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ background: 'radial-gradient(ellipse 80% 80% at 20% 50%, rgba(16,185,129,0.1), transparent)' }} />
+        <div className="absolute inset-y-0 left-0 w-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ background: '#10b981' }} />
+        <div className="flex items-center gap-5 relative z-10">
+          <div className="w-14 h-14 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)' }}>
+            <UsersRound size={28} style={{ color: '#10b981' }} strokeWidth={1.5} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="font-display font-black text-white text-xl group-hover:text-amber-400 transition-colors">Co-op</p>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
+                style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}>
+                Free
+              </span>
+            </div>
+            <p className="text-slate-500 text-sm mt-0.5">Team up with up to 3 friends · same waves · party code or invite link</p>
           </div>
           <ChevronRight size={16} className="shrink-0 text-slate-700 group-hover:text-white transition-colors" />
         </div>

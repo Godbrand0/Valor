@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Users, UserPlus, UserMinus, Swords, MessageCircle, Search, Check, X, Loader2 } from 'lucide-react'
+import { Users, UserPlus, UserMinus, Swords, MessageCircle, Search, Check, X, Loader2, Flame } from 'lucide-react'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useFriends, type FriendEntry, type FriendRequestEntry } from '@/hooks/useFriends'
@@ -329,6 +329,16 @@ export default function FriendsPage() {
                           {unreadByWallet[f.wallet]}
                         </span>
                       )}
+                    </button>
+                    {/* Live Face-Off challenge — FaceOffPage already reads ?challenge/&name
+                        to aim a new challenge at one player, it just had no way in. */}
+                    <button
+                      onClick={() => router.push(`/faceoff?challenge=${f.wallet}&name=${encodeURIComponent(who(f))}`)}
+                      className="shrink-0 w-10 h-10 rounded-lg border border-valor-border text-orange-300 hover:text-orange-200 hover:border-orange-500/50 transition-colors flex items-center justify-center"
+                      aria-label={`Face-Off ${who(f)}`}
+                      title="Challenge to a live Face-Off"
+                    >
+                      <Flame size={16} />
                     </button>
                     <button
                       onClick={() => router.push(`/duels?challenge=${f.wallet}&name=${encodeURIComponent(who(f))}`)}

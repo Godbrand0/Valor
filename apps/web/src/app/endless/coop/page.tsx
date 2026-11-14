@@ -66,12 +66,23 @@ export default function CoopLobbyPage() {
   const progress = useEndlessProgress(address, COOP_SEASON_ID)
 
   const [joinCode, setJoinCode] = useState('')
+  // Public parties are listed in the multiplayer lobby (/multiplayer) with their
+  // code, so anyone online can join. `?public=1` (the lobby's "Host a public
+  // party" link) pre-ticks it.
+  const [isPublic, setIsPublic] = useState(() => searchParams.get('public') === '1')
+  const [createdPublic, setCreatedPublic] = useState(false)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
 
   // Deep link — a shared `/endless/coop?code=XXXXX` prefills the join box
   // rather than auto-joining outright, so a stray click on an old/expired
   // link doesn't commit anyone to a party sight-unseen.
+  //
+  // The one exception is `&join=1`, which only the multiplayer lobby adds: that
+  // link is a JOIN button on a party the lobby just showed as live and open, so
+  // the click itself is the deliberate choice and making the player tap Join a
+  // second time would just be friction.
+  const autoJoinedRef = useRef(false)
   useEffect(() => {
     const fromUrl = searchParams.get('code')
     if (fromUrl) setJoinCode(fromUrl.toUpperCase().slice(0, 5))
@@ -97,14 +108,24 @@ export default function CoopLobbyPage() {
   }, [address, coop.state.phase, coop.state.isHost, coop.latestHostSnapshot, coop.sendHostState, coop.sendRemoteInput, coop.latestPeerInputs, coop.sendWaveCleared])
 
   const onCreate = useCallback(() => {
-    coop.createParty(displayName)
-  }, [coop, displayName])
+    setCreatedPublic(isPublic)
+    coop.createParty(displayName, isPublic)
+  }, [coop, displayName, isPublic])
 
   const onJoin = useCallback(() => {
     const code = joinCode.trim().toUpperCase()
     if (code.length !== 5) return
     coop.joinParty(code, displayName)
   }, [coop, joinCode, displayName])
+
+  // Lobby JOIN click → join straight away (see the deep-link comment above).
+  useEffect(() => {
+    if (autoJoinedRef.current || searchParams.get('join') !== '1' || !address || !player) return
+    const code = (searchParams.get('code') ?? '').trim().toUpperCase()
+    if (code.length !== 5 || coop.state.phase !== 'idle') return
+    autoJoinedRef.current = true
+    coop.joinParty(code, displayName)
+  }, [searchParams, address, player, coop, displayName])
 
   const copyCode = useCallback(() => {
     if (!coop.state.code) return
@@ -232,6 +253,18 @@ export default function CoopLobbyPage() {
             <div className="rounded-xl border border-valor-border bg-valor-surface p-5 flex flex-col gap-3">
               <p className="font-display font-black text-white text-sm uppercase tracking-wider">Start a party</p>
               <p className="text-slate-400 text-xs">You'll get a code to share with friends.</p>
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isPublic}
+                  onChange={(e) => setIsPublic(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-emerald-500"
+                />
+                <span className="text-xs text-slate-300">
+                  <span className="font-bold text-white">Public party</span> — list it in the Multiplayer lobby so anyone online can join.
+                  Leave unticked to keep it invite-only.
+                </span>
+              </label>
               <button
                 onClick={onCreate}
                 className="w-full min-h-12 rounded-xl bg-emerald-500 text-black font-bold text-sm hover:bg-emerald-400 transition-colors"
@@ -279,6 +312,13 @@ export default function CoopLobbyPage() {
                 {linkCopied ? <Check size={13} /> : <Link2 size={13} />}
                 {linkCopied ? 'Link copied' : 'Copy invite link'}
               </button>
+              {coop.state.isHost && (
+                <p className="text-[11px] text-slate-500 text-center">
+                  {createdPublic
+                    ? 'Public — listed in the Multiplayer lobby, anyone online can join.'
+                    : 'Invite-only — only people with the code or link can join.'}
+                </p>
+              )}
             </div>
 
             <div className="flex flex-col gap-2">
