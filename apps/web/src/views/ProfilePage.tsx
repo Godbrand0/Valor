@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useMyGroup } from '@/hooks/useGroups'
 import PendingGroupBanner from '@/components/groups/PendingGroupBanner'
@@ -26,10 +25,10 @@ import LoadingScreen from '@/components/ui/LoadingScreen'
 import Link from 'next/link'
 import { Wallet, HelpCircle, Users } from 'lucide-react'
 import { useFriends } from '@/hooks/useFriends'
+import Redirect from '@/components/ui/Redirect'
 
 export default function ProfilePage() {
   const { status, address, source } = useResolvedAuth()
-  const router      = useRouter()
   const player       = usePlayerStore(s => s.player)
   const playerSynced = usePlayerStore(s => s.playerSynced)
   const inventory    = usePlayerStore(s => s.inventory)
@@ -37,11 +36,11 @@ export default function ProfilePage() {
   const myGroup = useMyGroup(address)
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   // No cache and sync not done yet — brief wait
   if (!player && !playerSynced) return <LoadingScreen />
   // Sync done, confirmed no player — let home page route them
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   const charClass  = (player.character_class ?? 'Berserker') as CharacterClass
   const def        = CLASS_DEFINITIONS[charClass] ?? CLASS_DEFINITIONS['Berserker']

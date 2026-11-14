@@ -15,6 +15,7 @@ import { retryImport } from '@/lib/retryImport'
 import { equippedGunId } from '@/lib/guns'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 import LoadoutModal from '@/components/battle/LoadoutModal'
+import Redirect from '@/components/ui/Redirect'
 
 const ArenaScene = dynamic(
   () => retryImport(() => import('@/engine/scene/ArenaScene')).then((m) => m.ArenaScene),
@@ -177,9 +178,9 @@ export default function FaceOffPage() {
   }, [activeDuel, arena, onCreate])
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   // ── Pick a weapon before the fight — same pre-match loadout screen Duels
   // and every Operation use, right before the moment you'd actually deploy.

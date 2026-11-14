@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { Copy, Check, LogOut, ArrowUpRight, ArrowLeft } from 'lucide-react'
@@ -17,6 +16,7 @@ import RankPoolPanel from '@/components/profile/RankPoolPanel'
 import WeeklyEarnCap from '@/components/bank/WeeklyEarnCap'
 import { formatGDollarNumber } from '@/utils/format'
 import LoadingScreen from '@/components/ui/LoadingScreen'
+import Redirect from '@/components/ui/Redirect'
 
 function truncate(address: string) {
   return `${address.slice(0, 8)}…${address.slice(-6)}`
@@ -86,7 +86,6 @@ function SettleBanner({ address }: { address: string | undefined }) {
 
 export default function BankPage() {
   const { status, address } = useResolvedAuth()
-  const router = useRouter()
   const signOut = useSignOut()
   const player = usePlayerStore((s) => s.player)
   const playerSynced = usePlayerStore((s) => s.playerSynced)
@@ -106,9 +105,9 @@ export default function BankPage() {
   const { net: amountNet, fee: amountFee } = splitWithdrawal(parseFloat(amount) || 0, feeBps)
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   async function handleCopy() {
     await navigator.clipboard.writeText(address as string)

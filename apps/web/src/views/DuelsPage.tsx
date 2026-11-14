@@ -16,6 +16,7 @@ import { equippedGunId, equippedAmmoId, equippedAttachments } from '@/lib/guns'
 import { retryImport } from '@/lib/retryImport'
 import LoadoutModal from '@/components/battle/LoadoutModal'
 import LoadingScreen from '@/components/ui/LoadingScreen'
+import Redirect from '@/components/ui/Redirect'
 
 const ValorScene = dynamic(
   () => retryImport(() => import('@/engine/scene/ValorScene')).then((m) => m.ValorScene),
@@ -125,9 +126,9 @@ export default function DuelsPage() {
   }, [run, submitScore])
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   // ── The run itself ─────────────────────────────────────────────────────────
   if (playing && run) {

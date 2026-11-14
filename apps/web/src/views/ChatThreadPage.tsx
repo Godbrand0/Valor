@@ -8,6 +8,7 @@ import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useMessages, useSendMessage, useMarkRead } from '@/hooks/useChat'
 import LoadingScreen from '@/components/ui/LoadingScreen'
+import Redirect from '@/components/ui/Redirect'
 
 const shortWallet = (w: string) => `${w.slice(0, 6)}…${w.slice(-4)}`
 
@@ -48,9 +49,9 @@ export default function ChatThreadPage() {
   }, [messages.length])
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   const onSend = async () => {
     const body = draft.trim()

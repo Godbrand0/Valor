@@ -5,6 +5,7 @@ import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { usePlayerStore } from '@/stores/usePlayerStore'
 import ChallengeBattle from '@/components/battle/ChallengeBattle'
 import LoadingScreen from '@/components/ui/LoadingScreen'
+import Redirect from '@/components/ui/Redirect'
 
 /**
  * Ranked (async) PvP — the interim competitive loop while real-time PvP is built
@@ -21,9 +22,9 @@ export default function RankedPage() {
   const challengeTarget = searchParams.get('challenge') ?? undefined
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   return (
     <div className="max-w-2xl mx-auto">

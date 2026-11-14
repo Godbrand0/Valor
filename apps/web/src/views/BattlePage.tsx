@@ -12,6 +12,7 @@ import OperationsSelect from '@/components/battle/OperationsSelect'
 import BattlePvP from '@/components/battle/BattlePvP'
 import ChallengeBattle from '@/components/battle/ChallengeBattle'
 import LoadingScreen from '@/components/ui/LoadingScreen'
+import Redirect from '@/components/ui/Redirect'
 
 export default function BattlePage() {
   const { status, address } = useResolvedAuth()
@@ -33,9 +34,9 @@ export default function BattlePage() {
       : challengeTarget ? 'challenge' : 'menu'
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   const def = CLASS_DEFINITIONS[player.character_class as CharacterClass] ?? CLASS_DEFINITIONS.Berserker
 

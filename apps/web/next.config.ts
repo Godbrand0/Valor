@@ -34,6 +34,8 @@ const nextConfig: NextConfig = {
       accounts: path.resolve(__dirname, 'src/lib/stub/accounts.ts'),
       porto$: path.resolve(__dirname, 'src/lib/stub/porto.ts'),
       'porto/internal': path.resolve(__dirname, 'src/lib/stub/porto.ts'),
+      // coinbaseWallet() connector, also unused: its SDK is an uninstalled optional peer.
+      '@coinbase/wallet-sdk': path.resolve(__dirname, 'src/lib/stub/coinbase-wallet-sdk.ts'),
     }
     return config
   },

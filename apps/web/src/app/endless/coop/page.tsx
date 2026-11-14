@@ -12,6 +12,7 @@ import { equippedGunId, equippedAmmoId, equippedAttachments } from '@/lib/guns'
 import { retryImport } from '@/lib/retryImport'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 import type { CoopHostSnapshot, CoopOpts, CoopRemoteInput } from '@/engine/scene/ValorScene'
+import Redirect from '@/components/ui/Redirect'
 
 /** A fixed pseudo-season id, reusing `useEndlessProgress`'s existing
  *  wallet+season_id partition (the same mechanism the real Seasonal
@@ -165,9 +166,9 @@ export default function CoopLobbyPage() {
   }, [coop])
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   const { phase, code, seed, members, isHost, error, pausedWallet } = coop.state
 

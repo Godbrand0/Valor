@@ -9,6 +9,7 @@ import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useFriends, type FriendEntry, type FriendRequestEntry } from '@/hooks/useFriends'
 import { useUnreadCounts } from '@/hooks/useChat'
 import LoadingScreen from '@/components/ui/LoadingScreen'
+import Redirect from '@/components/ui/Redirect'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 
@@ -91,9 +92,9 @@ export default function FriendsPage() {
   }, [identifier, addBy, address])
 
   if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />
-  if (!player) { router.replace('/'); return null }
+  if (!player) return <Redirect to="/" />
 
   const onAdd = async (explicitIdentifier?: string) => {
     const value = (explicitIdentifier ?? identifier).trim()
