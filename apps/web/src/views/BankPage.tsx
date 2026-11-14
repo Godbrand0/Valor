@@ -101,9 +101,14 @@ export default function BankPage() {
   const { formatted: gBalanceFormatted, refetch: refetchBalance } = useGBalance(address as `0x${string}` | undefined)
   const { data: ledger } = useLedgerSummary(address)
   const { transfer, pending: transferring } = useTransferOut(address)
-  const { data: withdrawFee } = useWithdrawFee()
+  const { data: withdrawFee } = useWithdrawFee(address)
   const feeBps = withdrawFee?.bps ?? 0
-  const { net: amountNet, fee: amountFee } = splitWithdrawal(parseFloat(amount) || 0, feeBps)
+  const feeDiscount = withdrawFee?.discount ?? null
+  const amountG = parseFloat(amount) || 0
+  const { net: amountNet, fee: amountFee, discounted: amountDiscounted } = splitWithdrawal(amountG, feeBps, feeDiscount)
+  // The rate the player is effectively paying on THIS amount: lower than the
+  // standard rate when part of it falls inside their fee-discount allowance.
+  const effectivePercent = amountG > 0 ? Math.round((amountFee / amountG) * 10_000) / 100 : withdrawFee?.percent
 
   if (status === 'loading') return <LoadingScreen />
   if (status === 'unauthenticated' || !address) { router.replace('/'); return null }
@@ -233,6 +238,11 @@ export default function BankPage() {
               Send to any wallet — cash out your winnings
               {feeBps > 0 && ` · ${withdrawFee?.percent}% withdrawal fee`}
             </p>
+            {feeDiscount && (
+              <p className="text-[10px] text-emerald-400 mt-0.5">
+                Lautech prize rate: {feeDiscount.percent}% on your first {formatGDollarNumber(feeDiscount.remaining_g)} G$ withdrawn
+              </p>
+            )}
           </div>
           <ArrowUpRight size={18} className="text-slate-500" />
         </div>
@@ -274,9 +284,15 @@ export default function BankPage() {
                   <span className="font-mono text-slate-300">{formatGDollarNumber(parseFloat(amount) || 0)} G$</span>
                 </div>
                 <div className="flex justify-between text-slate-400">
-                  <span>Withdrawal fee ({withdrawFee?.percent}%)</span>
+                  <span>Withdrawal fee ({effectivePercent}%)</span>
                   <span className="font-mono text-amber-400">-{formatGDollarNumber(amountFee)} G$</span>
                 </div>
+                {feeDiscount && amountDiscounted > 0 && (
+                  <div className="flex justify-between text-[10px] text-emerald-400">
+                    <span>{feeDiscount.percent}% Lautech prize rate on {formatGDollarNumber(amountDiscounted)} G$</span>
+                    <span>{withdrawFee?.percent}% on the rest</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-bold text-white pt-1 border-t border-valor-border">
                   <span>They receive</span>
                   <span className="font-mono">{formatGDollarNumber(amountNet)} G$</span>

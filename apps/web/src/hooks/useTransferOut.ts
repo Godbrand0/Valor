@@ -33,17 +33,27 @@ export function useRelayAddress() {
   })
 }
 
-export type WithdrawFee = { bps: number; percent: number; address: `0x${string}` }
+// A wallet's own cheaper rate (the Break Out Lautech winners): `bps` applies to the
+// first `remaining_g` G$ it withdraws, the standard rate to anything beyond.
+export type WithdrawFeeDiscount = { bps: number; percent: number; remaining_g: number }
+export type WithdrawFee = {
+  bps: number
+  percent: number
+  address: `0x${string}`
+  discount: WithdrawFeeDiscount | null
+}
 
 // The withdrawal fee, read from the server rather than hardcoded here. The rate
 // shown to a player before they sign MUST be the rate the server charges, and a
 // duplicated constant drifts the first time it changes. Falls back to 0 on a
 // failed fetch so a dead endpoint understates the fee rather than inventing one.
-export function useWithdrawFee() {
+// Pass the wallet to also get that wallet's fee discount, if it has one.
+export function useWithdrawFee(walletAddress?: string) {
   return useQuery({
-    queryKey: ['withdraw-fee'],
+    queryKey: ['withdraw-fee', walletAddress ?? null],
     queryFn: async (): Promise<WithdrawFee> => {
-      const res = await fetch(`${API}/withdraw-fee`)
+      const qs = walletAddress ? `?wallet=${walletAddress}` : ''
+      const res = await fetch(`${API}/withdraw-fee${qs}`)
       if (!res.ok) throw new Error('Fee unavailable')
       return res.json()
     },
@@ -52,10 +62,15 @@ export function useWithdrawFee() {
 }
 
 /// Split a gross amount the way the server does: fee rounded down, player keeps
-/// the dust. Mirrors `split_fee` in the API.
-export function splitWithdrawal(amountG: number, bps: number) {
-  const fee = Math.floor(amountG * bps) / 10_000
-  return { net: amountG - fee, fee }
+/// the dust. Mirrors `split_fee_discounted` in the API: the first `remaining_g` of
+/// the amount pays the discount rate, the rest the standard rate, and a discount
+/// that is not lower than the standard rate does not apply.
+export function splitWithdrawal(amountG: number, bps: number, discount?: WithdrawFeeDiscount | null) {
+  const floorFee = (g: number, rate: number) => Math.floor(g * rate) / 10_000
+  const useDiscount = !!discount && discount.bps < bps
+  const discounted = useDiscount ? Math.min(amountG, discount!.remaining_g) : 0
+  const fee = (useDiscount ? floorFee(discounted, discount!.bps) : 0) + floorFee(amountG - discounted, bps)
+  return { net: amountG - fee, fee, discounted }
 }
 
 export function useTransferOut(walletAddress: string | undefined) {
@@ -147,6 +162,8 @@ export function useTransferOut(walletAddress: string | undefined) {
       const { tx_hash } = (await res.json()) as { tx_hash: string }
 
       queryClient.invalidateQueries({ queryKey: ['ledger-summary', walletAddress] })
+      // The withdrawal used up part of a fee-discount allowance, if the wallet has one.
+      queryClient.invalidateQueries({ queryKey: ['withdraw-fee'] })
       return tx_hash
     } finally {
       setPending(false)

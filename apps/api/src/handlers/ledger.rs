@@ -87,15 +87,113 @@ fn split_fee(gross: U256, bps: u64) -> (U256, U256) {
     (gross - fee, fee)
 }
 
+/// Like `split_fee`, for a wallet holding a fee discount: the first `cap` of the
+/// gross pays `discount_bps`, the rest pays `standard_bps`. Returns
+/// (net, fee, discounted) where `discounted` is how much of the gross used the
+/// allowance, which the caller must then draw down.
+///
+/// A discount can only ever LOWER the fee. If the standard rate is later cut to
+/// or below the discount rate, the discount stops applying and uses no allowance,
+/// so a winner is never charged more than everyone else.
+fn split_fee_discounted(gross: U256, standard_bps: u64, discount_bps: u64, cap: U256) -> (U256, U256, U256) {
+    if discount_bps >= standard_bps {
+        let (net, fee) = split_fee(gross, standard_bps);
+        return (net, fee, U256::zero());
+    }
+    let discounted = gross.min(cap);
+    let (_, fee_discounted) = split_fee(discounted, discount_bps);
+    let (_, fee_standard) = split_fee(gross - discounted, standard_bps);
+    let fee = fee_discounted + fee_standard;
+    (gross - fee, fee, discounted)
+}
+
+/// (discount rate in bps, allowance left in wei) for a wallet, if it has one.
+/// A failed lookup returns None, so the player pays the standard fee: the safe
+/// direction for the economy, and logged so a broken table does not go unnoticed.
+async fn fee_discount_for(db: &sqlx::PgPool, wallet: &str) -> Option<(u64, U256)> {
+    let row: Result<Option<(i32, String)>, _> = sqlx::query_as(
+        "SELECT bps, remaining_wei::text FROM withdraw_fee_discounts
+         WHERE wallet_address = $1 AND remaining_wei > 0",
+    )
+    .bind(wallet)
+    .fetch_optional(db)
+    .await;
+    match row {
+        Ok(Some((bps, remaining))) => Some((bps.max(0) as u64, U256::from_dec_str(&remaining).ok()?)),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("withdraw fee discount lookup failed for {}: {}", wallet, e);
+            None
+        }
+    }
+}
+
+/// Take `amount` wei out of a wallet's discount allowance. Conditional on there
+/// being enough left, so two transfers racing for the same allowance cannot both
+/// get it. Returns false if it could not be reserved.
+async fn reserve_fee_discount(db: &sqlx::PgPool, wallet: &str, amount: U256) -> bool {
+    sqlx::query(
+        "UPDATE withdraw_fee_discounts SET remaining_wei = remaining_wei - $2::numeric
+         WHERE wallet_address = $1 AND remaining_wei >= $2::numeric",
+    )
+    .bind(wallet)
+    .bind(amount.to_string())
+    .execute(db)
+    .await
+    .map(|r| r.rows_affected() == 1)
+    .unwrap_or(false)
+}
+
+/// Give back an allowance reserved for a transfer that then failed on-chain.
+async fn release_fee_discount(db: &sqlx::PgPool, wallet: &str, amount: U256) {
+    let r = sqlx::query(
+        "UPDATE withdraw_fee_discounts SET remaining_wei = remaining_wei + $2::numeric
+         WHERE wallet_address = $1",
+    )
+    .bind(wallet)
+    .bind(amount.to_string())
+    .execute(db)
+    .await;
+    if let Err(e) = r {
+        tracing::error!("could not release fee discount of {} wei for {}: {}", amount, wallet, e);
+    }
+}
+
 // ── GET /withdraw-fee ──────────────────────────────────────────────────────────
 // Public. The UI reads the rate from here rather than hardcoding it, so the
 // number a player is shown before signing is the number the server will actually
 // charge — a hardcoded copy would drift the first time the rate changed.
-pub async fn get_withdraw_fee() -> HttpResponse {
+//
+// With `?wallet=0x…` it also reports that wallet's fee discount, if it has one,
+// so the preview a winner sees matches what transfer-out will charge them.
+#[derive(Deserialize)]
+pub struct WithdrawFeeQuery {
+    pub wallet: Option<String>,
+}
+
+pub async fn get_withdraw_fee(
+    state: web::Data<AppState>,
+    query: web::Query<WithdrawFeeQuery>,
+) -> HttpResponse {
+    let standard = withdraw_fee_bps();
+    let discount = match query.wallet.as_deref().filter(|w| is_valid_wallet(w)) {
+        Some(w) => fee_discount_for(&state.db, &normalize_wallet(w))
+            .await
+            .filter(|(bps, _)| *bps < standard)
+            .map(|(bps, remaining)| {
+                json!({
+                    "bps":         bps,
+                    "percent":     bps as f64 / 100.0,
+                    "remaining_g": wei_to_g(remaining).to_string().parse::<f64>().unwrap_or(0.0),
+                })
+            }),
+        None => None,
+    };
     HttpResponse::Ok().json(json!({
-        "bps":     withdraw_fee_bps(),
-        "percent": withdraw_fee_bps() as f64 / 100.0,
+        "bps":     standard,
+        "percent": standard as f64 / 100.0,
         "address": withdraw_fee_address(),
+        "discount": discount,
     }))
 }
 
@@ -285,7 +383,15 @@ pub async fn transfer_out(
     // the fee ON TOP would need a permit larger than the amount they were shown,
     // which is exactly the sort of surprise a withdrawal fee must not spring.
     let bps = withdraw_fee_bps();
-    let (net, fee) = split_fee(amount, bps);
+    // A wallet with a fee discount (the Break Out Lautech winners) pays the lower
+    // rate on the part of this withdrawal that fits in its remaining allowance.
+    let (mut net, mut fee, mut discounted) = match fee_discount_for(&state.db, &wallet).await {
+        Some((discount_bps, remaining)) => split_fee_discounted(amount, bps, discount_bps, remaining),
+        None => {
+            let (n, f) = split_fee(amount, bps);
+            (n, f, U256::zero())
+        }
+    };
     if net.is_zero() {
         return HttpResponse::BadRequest()
             .json(json!({"error": "Amount too small after the withdrawal fee"}));
@@ -312,12 +418,26 @@ pub async fn transfer_out(
         }));
     }
 
+    // Reserve the discounted part only now, after every early return above, so a
+    // refused request never touches the allowance. If the reservation is lost to
+    // a concurrent transfer, fall back to the standard fee instead of failing.
+    if !discounted.is_zero() && !reserve_fee_discount(&state.db, &wallet, discounted).await {
+        let (n, f) = split_fee(amount, bps);
+        net = n;
+        fee = f;
+        discounted = U256::zero();
+    }
+
     let hash = match chain
         .transfer_g_with_fee(from, to, net, fee_to, fee, body.deadline, body.v, &body.r, &body.s)
         .await
     {
         Ok(h) => h,
         Err(e) => {
+            // The transfer did not happen, so the allowance it reserved was not used.
+            if !discounted.is_zero() {
+                release_fee_discount(&state.db, &wallet, discounted).await;
+            }
             tracing::warn!("transfer-out failed for {}: {}", wallet, e);
             // A relay fuel failure is OURS. Saying "signature invalid" here sent
             // players to re-sign something that could never succeed.
@@ -360,16 +480,17 @@ pub async fn transfer_out(
     }
 
     tracing::info!(
-        "Transfer-out confirmed: {} -> {} net={} fee={} ({} bps) tx={}",
-        wallet, body.to, net, fee, bps, hash_str,
+        "Transfer-out confirmed: {} -> {} net={} fee={} ({} bps, {} wei at the discount rate) tx={}",
+        wallet, body.to, net, fee, bps, discounted, hash_str,
     );
 
     HttpResponse::Ok().json(json!({
-        "success":  true,
-        "tx_hash":  hash_str,
-        "sent_g":   wei_to_g(net),
-        "fee_g":    wei_to_g(fee),
-        "fee_bps":  bps,
+        "success":       true,
+        "tx_hash":       hash_str,
+        "sent_g":        wei_to_g(net),
+        "fee_g":         wei_to_g(fee),
+        "fee_bps":       bps,
+        "discounted_g":  wei_to_g(discounted),
     }))
 }
 
@@ -394,6 +515,41 @@ mod tests {
         let (net, fee) = split_fee(g(1_000), 0);
         assert_eq!(net, g(1_000));
         assert!(fee.is_zero());
+    }
+
+    #[test]
+    fn discount_covers_the_whole_withdrawal_when_the_allowance_is_big_enough() {
+        // 1,000 G$ at 10% against a 20% standard fee, 5,000 G$ of allowance.
+        let (net, fee, discounted) = split_fee_discounted(g(1_000), 2000, 1000, g(5_000));
+        assert_eq!(fee, g(100));
+        assert_eq!(net, g(900));
+        assert_eq!(discounted, g(1_000));
+    }
+
+    #[test]
+    fn discount_only_covers_what_is_left_of_the_allowance() {
+        // 1,000 G$ with 400 G$ of allowance: 400 at 10% (40) + 600 at 20% (120).
+        let (net, fee, discounted) = split_fee_discounted(g(1_000), 2000, 1000, g(400));
+        assert_eq!(fee, g(160));
+        assert_eq!(discounted, g(400));
+        assert_eq!(net + fee, g(1_000), "the split must never mint or burn G$");
+    }
+
+    #[test]
+    fn discount_never_raises_the_fee_above_the_standard_rate() {
+        // Standard cut to 5%: a 10% discount must not apply and must use no allowance.
+        let (net, fee, discounted) = split_fee_discounted(g(1_000), 500, 1000, g(5_000));
+        assert_eq!(fee, g(50));
+        assert_eq!(net, g(950));
+        assert!(discounted.is_zero());
+    }
+
+    #[test]
+    fn an_empty_allowance_charges_the_standard_fee() {
+        let (net, fee, discounted) = split_fee_discounted(g(1_000), 2000, 1000, U256::zero());
+        assert_eq!(fee, g(200));
+        assert_eq!(net, g(800));
+        assert!(discounted.is_zero());
     }
 
     #[test]
