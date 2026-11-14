@@ -236,11 +236,14 @@ export default function BankPage() {
             <p className="font-bold text-white text-sm">Transfer G$ Out</p>
             <p className="text-[10px] text-slate-500 mt-0.5">
               Send to any wallet — cash out your winnings
-              {feeBps > 0 && ` · ${withdrawFee?.percent}% withdrawal fee`}
+              {feeBps > 0 && !feeDiscount && ` · ${withdrawFee?.percent}% withdrawal fee`}
             </p>
+            {/* A winner is shown THEIR rate here, not the standard one: leaving
+                "20% withdrawal fee" on screen with a smaller note under it reads
+                as the fee being 20%. */}
             {feeDiscount && (
               <p className="text-[10px] text-emerald-400 mt-0.5">
-                Lautech prize rate: {feeDiscount.percent}% on your first {formatGDollarNumber(feeDiscount.remaining_g)} G$ withdrawn
+                {feeDiscount.percent}% withdrawal fee on your first {formatGDollarNumber(feeDiscount.remaining_g)} G$ (Lautech prize), then {withdrawFee?.percent}%
               </p>
             )}
           </div>
