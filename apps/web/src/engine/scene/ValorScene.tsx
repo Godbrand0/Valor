@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerformanceMonitor, AdaptiveDpr } from '@react-three/drei';
-import { EffectComposer, Bloom, Noise, Vignette, ChromaticAberration, N8AO } from '@react-three/postprocessing';
+import { EffectComposer, Bloom, Noise, Vignette, ChromaticAberration, N8AO, FXAA, SMAA } from '@react-three/postprocessing';
 import { BlendFunction } from 'postprocessing';
 import * as THREE from 'three';
 import { usePbr } from './usePbr';
@@ -34,6 +34,9 @@ import {
 import { dressingFor, dressingColliders, type PropSpec } from './setDressing';
 import { useSurvivalRearm, NeedArmError, type RearmAction } from '@/hooks/useSurvivalRearm';
 import { useGauntlet, type GauntletBoardRow, type SeasonInfo } from '@/hooks/useGauntlet';
+import { AIM_DEFAULTS, SENS_MIN, SENS_MAX, SMOOTH_RATE, loadAimSettings, saveAimSettings, type AimSettings, type AimSmoothing } from '../input/aimSettings';
+import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout } from '../input/controlLayout';
+import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
 
 /**
  * Valor clone · slice 1 graybox (docs/the plan.md).
@@ -66,27 +69,10 @@ const KEY_LOOK = 0.9;           // rad/s for arrow-key look — small nudges
 const ADS_SENS = 0.55;          // look slows while aiming down sights (precision)
 const MOUSE_MAX_STEP = 90;      // clamp per-event mouse delta — kills pointer-lock spikes
 const TOUCH_LOOK_SENS = 0.0022; // rad per touch-drag pixel (mobile look)
-/// How fast the touch-drag buffer drains, per second. Higher = tighter and more
-/// immediate, lower = glassier and more floaty. Used as `1 - exp(-dt * rate)`, so this
-/// is a real-time constant: the same feel at 20fps as at 60fps. This is the number to
-/// turn if mobile aim feels either laggy or twitchy.
-const LOOK_SMOOTH_RATE = 19;
-
-// Player-tunable look sensitivity. A single multiplier over the tuned defaults, kept
-// per device in localStorage — a phone and a desktop want very different numbers, and
-// localStorage is already per device, so one key covers both without a mode switch.
-const SENS_KEY = 'valor_look_sens';
-const SENS_MIN = 0.25, SENS_MAX = 2.5, SENS_DEFAULT = 1;
-function loadLookSens(): number {
-  if (typeof window === 'undefined') return SENS_DEFAULT;
-  try {
-    const v = Number(window.localStorage.getItem(SENS_KEY));
-    // Clamped on the way IN, not just on the way out: a hand-edited or stale value
-    // must not be able to make the game unplayable before the slider can fix it.
-    if (Number.isFinite(v) && v > 0) return Math.max(SENS_MIN, Math.min(SENS_MAX, v));
-  } catch { /* private mode */ }
-  return SENS_DEFAULT;
-}
+// How fast the touch-drag buffer drains is now a player setting (AIM SMOOTHING); see
+// SMOOTH_RATE in ../input/aimSettings. 'balanced' is the old fixed rate of 19.
+// Look sensitivity, ADS and firing speed, invert-Y and smoothing all live in
+// ../input/aimSettings, persisted per device.
 const PITCH_LIMIT = 1.45;       // ~83°
 
 const RECOIL_RECOVER = 12;     // per second
@@ -310,6 +296,117 @@ function frost(px: number, opaque: string): React.CSSProperties {
 /** Shared outlined-button style for the pause menu (C4). */
 function btnC4(color: string): React.CSSProperties {
   return { pointerEvents: 'auto', cursor: 'pointer', background: 'transparent', border: `1px solid ${color}`, color, fontFamily: 'inherit', fontSize: 13, letterSpacing: 3, padding: '11px 22px', borderRadius: 6 };
+}
+
+/** A small segmented choice row for the settings panel. */
+function Segmented<T extends string>({ value, options, onPick }: { value: T; options: readonly { id: T; label: string }[]; onPick: (v: T) => void }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {options.map((o) => (
+        <button key={o.id} onClick={() => onPick(o.id)} style={{
+          ...btnC4(value === o.id ? '#37d0e0' : '#5a6773'),
+          padding: '5px 11px', fontSize: 11, letterSpacing: 1,
+          background: value === o.id ? 'rgba(55,208,224,.14)' : 'transparent',
+          opacity: value === o.id ? 1 : 0.7,
+        }}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+/** One labelled sensitivity slider with its value and a per-row reset. */
+function SensRow({ label, hint, value, onChange }: { label: string; hint: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{ width: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ fontSize: 10, letterSpacing: 2, color: '#9fb4c8', width: 108, whiteSpace: 'nowrap' }}>{label}</span>
+        <input type="range" min={SENS_MIN} max={SENS_MAX} step={0.05} value={value}
+          onChange={(e) => onChange(Number(e.currentTarget.value))}
+          aria-label={label}
+          style={{ flex: 1, accentColor: '#37d0e0', height: 26, cursor: 'pointer', touchAction: 'none' }} />
+        <span style={{ fontSize: 11, color: '#37d0e0', fontVariantNumeric: 'tabular-nums', width: 34, textAlign: 'right' }}>{value.toFixed(2)}</span>
+        <button onClick={() => onChange(1)} disabled={value === 1} aria-label={`Reset ${label}`}
+          style={{ ...btnC4('#5a6773'), padding: '3px 7px', fontSize: 9, letterSpacing: 1, opacity: value === 1 ? 0.3 : 1 }}>1.00</button>
+      </div>
+      <div style={{ fontSize: 10, color: '#4f5d6a', marginLeft: 118, marginTop: -2 }}>{hint}</div>
+    </div>
+  );
+}
+
+const SMOOTH_OPTIONS: readonly { id: AimSmoothing; label: string }[] = [
+  { id: 'responsive', label: 'RESPONSIVE' },
+  { id: 'balanced', label: 'BALANCED' },
+  { id: 'smooth', label: 'SMOOTH' },
+];
+const QUALITY_OPTIONS = [
+  { id: 'auto', label: 'AUTO' },
+  { id: 'high', label: 'HIGH' },
+  { id: 'low', label: 'LOW' },
+] as const;
+
+/**
+ * Pause-menu SETTINGS page: graphics, aim speeds and (on touch) the button layout.
+ * Every value applies live, so RESUME is the test.
+ */
+function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, onCustomize, onBack, onResume }: {
+  isTouch: boolean;
+  quality: 'auto' | 'high' | 'low';
+  pickQuality: (q: 'auto' | 'high' | 'low') => void;
+  aim: AimSettings;
+  updateAim: (patch: Partial<AimSettings>) => void;
+  onCustomize: () => void;
+  onBack: () => void;
+  onResume: () => void;
+}) {
+  const head: React.CSSProperties = { fontSize: 11, letterSpacing: 4, color: '#37d0e0', marginTop: 16, marginBottom: 8, alignSelf: 'flex-start' };
+  const isDefault = aim.look === AIM_DEFAULTS.look && aim.ads === AIM_DEFAULTS.ads && aim.firing === AIM_DEFAULTS.firing
+    && aim.invertY === AIM_DEFAULTS.invertY && aim.smoothing === AIM_DEFAULTS.smoothing;
+  return (
+    <div style={{ width: 'min(92vw, 460px)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      <div style={{ fontSize: 12, letterSpacing: 8, color: '#37d0e0' }}>SETTINGS</div>
+
+      <div style={head}>GRAPHICS</div>
+      <div style={{ alignSelf: 'flex-start' }}>
+        <Segmented value={quality} options={QUALITY_OPTIONS} onPick={pickQuality} />
+        <div style={{ fontSize: 10, color: '#4f5d6a', marginTop: 5 }}>
+          AUTO adapts to your device · HIGH renders sharper (needs a strong device) · LOW for laggy devices
+        </div>
+      </div>
+
+      <div style={head}>AIM</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+        <SensRow label={isTouch ? 'CAMERA SPEED' : 'MOUSE SPEED'} hint="turning speed when not aiming" value={aim.look} onChange={(v) => updateAim({ look: v })} />
+        <SensRow label="ADS SPEED" hint="extra slowdown/speedup while aiming down sights" value={aim.ads} onChange={(v) => updateAim({ ads: v })} />
+        {isTouch && (
+          <SensRow label="FIRING SPEED" hint="aiming by sliding on the fire button" value={aim.firing} onChange={(v) => updateAim({ firing: v })} />
+        )}
+      </div>
+      {isTouch && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, alignSelf: 'flex-start', marginTop: 10 }}>
+          <span style={{ fontSize: 10, letterSpacing: 2, color: '#9fb4c8', width: 108 }}>SMOOTHING</span>
+          <Segmented value={aim.smoothing} options={SMOOTH_OPTIONS} onPick={(v) => updateAim({ smoothing: v })} />
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, alignSelf: 'flex-start', marginTop: 10 }}>
+        <span style={{ fontSize: 10, letterSpacing: 2, color: '#9fb4c8', width: 108 }}>INVERT LOOK Y</span>
+        <Segmented value={aim.invertY ? 'on' : 'off'} options={[{ id: 'off', label: 'OFF' }, { id: 'on', label: 'ON' }] as const} onPick={(v) => updateAim({ invertY: v === 'on' })} />
+        {!isDefault && (
+          <button onClick={() => updateAim({ ...AIM_DEFAULTS })} style={{ ...btnC4('#5a6773'), padding: '5px 10px', fontSize: 10, letterSpacing: 1 }}>RESET AIM</button>
+        )}
+      </div>
+
+      {isTouch && (<>
+        <div style={head}>CONTROLS</div>
+        <button onClick={onCustomize} style={{ ...btnC4('#eab308'), alignSelf: 'flex-start', padding: '8px 16px', fontSize: 12, letterSpacing: 2 }}>CUSTOMIZE BUTTONS</button>
+        <div style={{ fontSize: 10, color: '#4f5d6a', marginTop: 5, alignSelf: 'flex-start' }}>move, resize and fade the on-screen buttons</div>
+      </>)}
+
+      <div style={{ display: 'flex', gap: 12, marginTop: 22 }}>
+        <button onClick={onBack} style={btnC4('#9fb4c8')}>BACK</button>
+        <button onClick={onResume} style={{ ...btnC4('#37d0e0'), background: 'rgba(55,208,224,.12)', fontWeight: 700 }}>{iconRow('play', 'RESUME', 13)}</button>
+      </div>
+    </div>
+  );
 }
 
 // Per-weapon viewmodel framing so each gun reads as a different silhouette off
@@ -550,13 +647,12 @@ interface Controls {
   lookX: number; // accumulated touch-drag dx, consumed each frame
   lookY: number;
   /**
-   * Player's look-sensitivity multiplier on top of LOOK_SENS / TOUCH_LOOK_SENS.
+   * Player's aim settings (camera / ADS / firing speed, invert-Y, smoothing).
    *
    * Lives here rather than in a prop so the frame loop picks a change up on the very
-   * next frame with no remount. 1 = the tuned default; the slider in the pause menu
-   * writes it and persists it per device.
+   * next frame with no remount. The pause menu's SETTINGS panel writes it.
    */
-  lookSens: number;
+  aim: AimSettings;
   fire: boolean;
   ads: boolean;
   /** Touch crouch, held as a TOGGLE rather than a press. The stick and the fire pad
@@ -1477,7 +1573,8 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     leanCur.current += (leanWant - leanCur.current) * Math.min(1, dt * 12);
 
     // ── Look: mouse (pointer-lock) + touch drag + arrow keys, slowed by ADS ──
-    const adsMult = THREE.MathUtils.lerp(1, ADS_SENS, adsCur.current);
+    const aim = ct.aim;
+    const adsMult = THREE.MathUtils.lerp(1, ADS_SENS * aim.ads, adsCur.current);
     // Touch drag feeds a buffer we EASE out of, so aiming glides instead of
     // jittering frame-to-frame (mouse stays raw — desktop wants 1:1).
     const rawTouchX = ct.lookX, rawTouchY = ct.lookY; // this frame's actual finger travel
@@ -1495,7 +1592,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // amount of REAL TIME, so 20fps and 60fps smooth identically. Total rotation for a
     // given swipe is unchanged — exponential decay only spreads it, so sensitivity feels
     // the same and only the delivery is smoother.
-    const ease = 1 - Math.exp(-dt * LOOK_SMOOTH_RATE);
+    const ease = 1 - Math.exp(-dt * SMOOTH_RATE[aim.smoothing]);
     const tx = lookAccum.current.x * ease, ty = lookAccum.current.y * ease;
     lookAccum.current.x -= tx; lookAccum.current.y -= ty;
     // A real manual look this frame (drag or mouse) drops any lock-on so you aim freely.
@@ -1507,15 +1604,16 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       || Math.abs(rawTouchX) > 1.5 || Math.abs(rawTouchY) > 1.5;
     // The player's multiplier scales mouse and touch together — whichever they use is
     // the one they are tuning, and a device is effectively one or the other.
-    const sens = adsMult * (ct.lookSens > 0 ? ct.lookSens : 1);
+    const sens = adsMult * aim.look;
+    const invY = aim.invertY ? -1 : 1;
     yaw.current -= (mouseDX.current * LOOK_SENS + tx * TOUCH_LOOK_SENS) * sens;
-    pitch.current -= (mouseDY.current * LOOK_SENS + ty * TOUCH_LOOK_SENS) * sens;
+    pitch.current -= (mouseDY.current * LOOK_SENS + ty * TOUCH_LOOK_SENS) * sens * invY;
     mouseDX.current = 0; mouseDY.current = 0;
     const keyStep = KEY_LOOK * adsMult * dt;
     if (held('ArrowLeft')) yaw.current += keyStep;
     if (held('ArrowRight')) yaw.current -= keyStep;
-    if (held('ArrowUp')) pitch.current += keyStep;
-    if (held('ArrowDown')) pitch.current -= keyStep;
+    if (held('ArrowUp')) pitch.current += keyStep * invY;
+    if (held('ArrowDown')) pitch.current -= keyStep * invY;
 
     // ── Assisted targeting: hard lock-on + tap-to-target ──
     // Point-and-tap for people who can't flick-aim. A Target button locks the nearest
@@ -3299,15 +3397,39 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
           top of the one it needed. That is pure fill cost, and fill is precisely what
           a struggling phone has least of. The chromatic edge and vignette are lens
           flavour; a playable frame rate is not. */}
+      {/* ANTI-ALIASING. The canvas is created with antialias:false and every composer
+          ran multisampling={0}, so NO tier had any edge smoothing at all: on a phone
+          rendering at DPR 1–1.5 onto a 3x screen, every wall edge, rail and gun
+          silhouette was a visible staircase that crawled as you turned. That is most
+          of what read as "not sharp / not clean".
+
+          Phones (lowSpec): FXAA REPLACES the chromatic aberration pass rather than
+          joining it. Both are convolution effects, which postprocessing will not merge
+          into one pass, so each costs a full-screen pass of its own — swapping them
+          keeps the frame's pass count exactly where it was. At the phone's 0.0003
+          offset the aberration was barely visible anyway; the edge smoothing is not.
+          Desktop light stack: FXAA added (one cheap pass). Full stack: SMAA, which
+          holds thin edges better than FXAA and is affordable on a machine already
+          paying for N8AO. Minimal keeps no composer at all: that tier exists to cut
+          full-screen passes. */}
       {minimal ? null : (lightFx || endless) ? (
-        <EffectComposer multisampling={0}>
-          <ChromaticAberration offset={caOffset} radialModulation modulationOffset={0.35} blendFunction={BlendFunction.NORMAL} />
-          <Vignette darkness={0.5} offset={0.3} blendFunction={BlendFunction.NORMAL} />
-        </EffectComposer>
+        lowSpec ? (
+          <EffectComposer multisampling={0}>
+            <FXAA />
+            <Vignette darkness={0.5} offset={0.3} blendFunction={BlendFunction.NORMAL} />
+          </EffectComposer>
+        ) : (
+          <EffectComposer multisampling={0}>
+            <FXAA />
+            <ChromaticAberration offset={caOffset} radialModulation modulationOffset={0.35} blendFunction={BlendFunction.NORMAL} />
+            <Vignette darkness={0.5} offset={0.3} blendFunction={BlendFunction.NORMAL} />
+          </EffectComposer>
+        )
       ) : (
         <EffectComposer multisampling={0} enableNormalPass>
           <N8AO aoRadius={1.4} intensity={2.6} distanceFalloff={1} quality="medium" color="#0a0a0e" />
           <Bloom intensity={0.18} luminanceThreshold={0.9} luminanceSmoothing={0.2} mipmapBlur />
+          <SMAA />
           <ChromaticAberration offset={caOffset} radialModulation modulationOffset={0.35} blendFunction={BlendFunction.NORMAL} />
           <Noise premultiply blendFunction={BlendFunction.SCREEN} opacity={0.3} />
           <Vignette darkness={0.5} offset={0.3} blendFunction={BlendFunction.NORMAL} />
@@ -3789,7 +3911,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
 
   // Mobile is a first-class target (Marvy's note): a left move-stick, a right
   // look-pad, and fire/ADS/reload buttons write into this, read by FpsWorld.
-  const controls = useRef<Controls>({ moveX: 0, moveY: 0, lookX: 0, lookY: 0, lookSens: loadLookSens(), fire: false, ads: false, crouch: false, reload: false, fireMode: false, swap: false, toggle: null, lockCycle: false, tapAimX: null, tapAimY: null });
+  const controls = useRef<Controls>({ moveX: 0, moveY: 0, lookX: 0, lookY: 0, aim: loadAimSettings(), fire: false, ads: false, crouch: false, reload: false, fireMode: false, swap: false, toggle: null, lockCycle: false, tapAimX: null, tapAimY: null });
   const audio = useMemo(() => new FpsAudio(), []);
   useEffect(() => () => audio.dispose(), [audio]);
 
@@ -4005,15 +4127,22 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       if (q === 'high') window.localStorage.removeItem('valor_degraded');
     } catch { /* private mode */ }
   }, []);
-  // Look sensitivity. Mirrored in React state purely so the slider re-renders; the
-  // frame loop reads controls.current.lookSens, so a drag is felt immediately.
-  const [lookSens, setLookSens] = useState<number>(loadLookSens);
-  const pickLookSens = useCallback((v: number) => {
-    const clamped = Math.max(SENS_MIN, Math.min(SENS_MAX, v));
-    setLookSens(clamped);
-    controls.current.lookSens = clamped;
-    try { window.localStorage.setItem(SENS_KEY, String(clamped)); } catch { /* private mode */ }
+  // Aim settings. Mirrored in React state purely so the sliders re-render; the frame
+  // loop reads controls.current.aim, so a change is felt on the very next frame.
+  const [aim, setAim] = useState<AimSettings>(loadAimSettings);
+  const updateAim = useCallback((patch: Partial<AimSettings>) => {
+    setAim((prev) => {
+      const next = { ...prev, ...patch };
+      controls.current.aim = next;
+      saveAimSettings(next);
+      return next;
+    });
   }, []);
+  // Pause menu page: the main actions, or the settings panel.
+  const [pauseView, setPauseView] = useState<'main' | 'settings'>('main');
+  // Mobile HUD layout (positions / sizes / opacity), editable from SETTINGS.
+  const [layout, setLayout] = useState<ControlLayout>(loadControlLayout);
+  const [editingLayout, setEditingLayout] = useState(false);
 
   // Auto-detect: PerformanceMonitor flags a machine that can't hold framerate even
   // after AdaptiveDpr has dropped the resolution. A warmup window + a small counter
@@ -4123,12 +4252,13 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
 
   // C4 · deliberate pause menu. Non-destructive: opening it just freezes the game,
   // so an accidental open is a one-tap RESUME away (unlike the old exit-to-OPS button).
-  const openPause = () => { setPaused(true); try { document.exitPointerLock?.(); } catch { /* ignore */ } };
+  const openPause = () => { setPauseView('main'); setPaused(true); try { document.exitPointerLock?.(); } catch { /* ignore */ } };
   const resume = () => setPaused(false);
   const restartFromPause = () => { setPaused(false); setDebrief(null); setRunNonce((n) => n + 1); };
   const exitToOps = () => { setPaused(false); setSelect(true); };
 
-  const JOY_R = 46;
+  // Knob travel scales with the stick, so a resized stick still reaches full speed at its rim.
+  const JOY_R = 46 * (layout.placements.move?.scale ?? 1);
   const joyId = useRef<number | null>(null);
   const joyCenter = useRef({ x: 0, y: 0 });
   const joyKnob = useRef<HTMLDivElement>(null);
@@ -4227,8 +4357,11 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
   };
   const fireMove = (e: React.TouchEvent) => {
     for (const t of Array.from(e.changedTouches)) if (t.identifier === fireId.current) {
-      controls.current.lookX += t.clientX - fireLast.current.x;
-      controls.current.lookY += t.clientY - fireLast.current.y;
+      // FIRING speed scales only drags that start on the fire pad, so a player can
+      // keep a fast camera for turning and a steadier hand while shooting.
+      const f = controls.current.aim.firing;
+      controls.current.lookX += (t.clientX - fireLast.current.x) * f;
+      controls.current.lookY += (t.clientY - fireLast.current.y) * f;
       fireLast.current = { x: t.clientX, y: t.clientY };
     }
   };
@@ -4303,7 +4436,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         // AdaptiveDpr already trimming, so leaving it capped at 1.5 was leaving the
         // largest single lever untouched on exactly the devices that needed it.
         // Healthy phones keep 1.5 and capable desktops keep 2, unchanged.
-        dpr={minimal ? [1, 1] : (isTouch ? [1, 1.5] : [1, 2])}
+        dpr={minimal ? [1, 1] : (isTouch ? [1, quality === 'high' ? 2 : 1.5] : [1, 2])}
         camera={{ position: [mission.start[0], 1.6, mission.start[1]], fov: 55, near: 0.01, far: 320 }}
       >
         {/* Auto-degrade: after a warmup, sustained declines (or the flipflop fallback)
@@ -4473,13 +4606,19 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         <div ref={(r) => { hud.current.complete = r; }} style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,12,10,.6)', color: '#5fe0a8', fontSize: 40, fontWeight: 800, letterSpacing: 6 }}>MISSION COMPLETE</div>
 
         {/* survival: run-over summary */}
+        {/* The buttons below INHERIT pointer-events from this overlay. They used to say
+            'auto', which beats a parent's 'none': while the overlay sat hidden at
+            opacity 0 through every normal fight, AGAIN and OPERATIONS were invisible but
+            live in the middle of the screen. A tap there restarted the run or opened the
+            ops menu, an aim drag starting there never reached the look surface, and a
+            HUD button moved over that spot stopped responding. */}
         <div ref={(r) => { hud.current.survEnd = r; }} style={{ position: 'absolute', inset: 0, zIndex: 40, opacity: 0, pointerEvents: 'none', transition: 'opacity .4s', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(16,2,2,.92)', color: '#ff8a7a', textAlign: 'center' }}>
           <div style={{ fontSize: 13, letterSpacing: 8, color: '#c98' }}>THE KILL-HOUSE</div>
           <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: 4, margin: '8px 0', color: '#ff5a47' }}>OVERRUN</div>
           <div ref={(r) => { hud.current.survEndText = r; }} style={{ fontSize: 14, color: '#e6c2bc', letterSpacing: 1 }}>you held 0 waves</div>
           <div style={{ display: 'flex', gap: 12, marginTop: 26 }}>
-            <button onClick={() => { if (hud.current.survEnd) { hud.current.survEnd.style.opacity = '0'; hud.current.survEnd.style.pointerEvents = 'none'; } setRunNonce((n) => n + 1); }} style={{ pointerEvents: 'auto', cursor: 'pointer', background: 'transparent', border: '1px solid #ff8a7a', color: '#ff8a7a', fontFamily: 'inherit', fontSize: 13, letterSpacing: 3, padding: '10px 20px', borderRadius: 5 }}>{iconRow('refresh', 'AGAIN', 14)}</button>
-            <button onClick={() => { if (hud.current.survEnd) { hud.current.survEnd.style.opacity = '0'; hud.current.survEnd.style.pointerEvents = 'none'; } setSelect(true); }} style={{ pointerEvents: 'auto', cursor: 'pointer', background: 'transparent', border: '1px solid #9fb4c8', color: '#9fb4c8', fontFamily: 'inherit', fontSize: 13, letterSpacing: 3, padding: '10px 20px', borderRadius: 5 }}>{iconRow('menu', 'OPERATIONS', 14)}</button>
+            <button onClick={() => { if (hud.current.survEnd) { hud.current.survEnd.style.opacity = '0'; hud.current.survEnd.style.pointerEvents = 'none'; } setRunNonce((n) => n + 1); }} style={{ pointerEvents: 'inherit', cursor: 'pointer', background: 'transparent', border: '1px solid #ff8a7a', color: '#ff8a7a', fontFamily: 'inherit', fontSize: 13, letterSpacing: 3, padding: '10px 20px', borderRadius: 5 }}>{iconRow('refresh', 'AGAIN', 14)}</button>
+            <button onClick={() => { if (hud.current.survEnd) { hud.current.survEnd.style.opacity = '0'; hud.current.survEnd.style.pointerEvents = 'none'; } setSelect(true); }} style={{ pointerEvents: 'inherit', cursor: 'pointer', background: 'transparent', border: '1px solid #9fb4c8', color: '#9fb4c8', fontFamily: 'inherit', fontSize: 13, letterSpacing: 3, padding: '10px 20px', borderRadius: 5 }}>{iconRow('menu', 'OPERATIONS', 14)}</button>
           </div>
         </div>
         {/* Survival re-arm G$ sink (B1) — only with a wallet; sandbox stays local */}
@@ -4487,8 +4626,19 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         {/* Prestige Gauntlet run token + ranked result (B2) */}
         {walletAddress && <GauntletRunController walletAddress={walletAddress} />}
         {/* C4 · pause menu — deliberate, non-destructive, works in every mode */}
-        {paused && !selectOpen && !debrief && (
-          <div style={{ position: 'absolute', inset: 0, zIndex: 46, background: 'rgba(3,6,10,.9)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: UI_FONT, color: '#e9edf2', pointerEvents: 'auto', cursor: 'auto' }}>
+        {paused && !selectOpen && !debrief && !editingLayout && (
+          // Scrolls on a short landscape phone; the inner margin:auto keeps it centred
+          // when it fits (justify-content:center would clip the top instead).
+          <div style={{ position: 'absolute', inset: 0, zIndex: 46, background: 'rgba(3,6,10,.9)', display: 'flex', overflowY: 'auto', fontFamily: UI_FONT, color: '#e9edf2', pointerEvents: 'auto', cursor: 'auto', touchAction: 'pan-y' }}>
+          <div style={{ margin: 'auto', padding: '18px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          {pauseView === 'settings' ? (
+            <SettingsPanel
+              isTouch={isTouch} quality={quality} pickQuality={pickQuality}
+              aim={aim} updateAim={updateAim}
+              onCustomize={() => setEditingLayout(true)}
+              onBack={() => setPauseView('main')} onResume={() => { setPauseView('main'); resume(); }}
+            />
+          ) : (<>
             <div style={{ fontSize: 12, letterSpacing: 8, color: '#37d0e0' }}>PAUSED</div>
             <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: 3, margin: '10px 0 4px' }}>
               {mode === 'endless' ? mission.name : mode === 'gauntlet' ? 'THE GAUNTLET' : mode === 'survival' ? 'THE KILL-HOUSE' : mission.name}
@@ -4506,42 +4656,21 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
                 </button>
               )}
             </div>
-            {/* Manual graphics quality — instant relief on a laggy machine (LOW = drop
-                shadows, set-dressing, and render resolution). AUTO adapts on its own. */}
-            <div style={{ display: 'flex', gap: 8, marginTop: 20, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, letterSpacing: 2, color: '#6f7d8c' }}>GRAPHICS</span>
-              {(['auto', 'high', 'low'] as const).map((q) => (
-                <button key={q} onClick={() => pickQuality(q)} style={{
-                  ...btnC4(quality === q ? '#37d0e0' : '#5a6773'),
-                  padding: '5px 12px', fontSize: 11, letterSpacing: 1,
-                  background: quality === q ? 'rgba(55,208,224,.14)' : 'transparent',
-                  opacity: quality === q ? 1 : 0.65,
-                }}>{q.toUpperCase()}</button>
-              ))}
-            </div>
-            {/* Look sensitivity. Here rather than in a settings screen because the only
-                way to judge it is to change it and immediately fight again — RESUME is
-                one tap away, and the value is live the moment the slider moves. */}
-            <div style={{ display: 'flex', gap: 10, marginTop: 16, alignItems: 'center', width: 'min(88vw, 340px)' }}>
-              <span style={{ fontSize: 10, letterSpacing: 2, color: '#6f7d8c', whiteSpace: 'nowrap' }}>
-                {isTouch ? 'AIM SPEED' : 'MOUSE SPEED'}
-              </span>
-              <input
-                type="range"
-                min={SENS_MIN} max={SENS_MAX} step={0.05} value={lookSens}
-                onChange={(e) => pickLookSens(Number(e.currentTarget.value))}
-                aria-label="Look sensitivity"
-                style={{ flex: 1, accentColor: '#37d0e0', height: 26, cursor: 'pointer', touchAction: 'none' }}
-              />
-              <span style={{ fontSize: 11, color: '#37d0e0', fontVariantNumeric: 'tabular-nums', width: 38, textAlign: 'right' }}>
-                {lookSens.toFixed(2)}
-              </span>
-              {lookSens !== SENS_DEFAULT && (
-                <button onClick={() => pickLookSens(SENS_DEFAULT)} style={{ ...btnC4('#5a6773'), padding: '4px 8px', fontSize: 9, letterSpacing: 1 }}>RESET</button>
-              )}
-            </div>
+            {/* Graphics, aim speeds and the button layout live one tap away; the
+                values are live, so RESUME straight from there tests them at once. */}
+            <button onClick={() => setPauseView('settings')} style={{ ...btnC4('#37d0e0'), marginTop: 18, padding: '8px 18px', fontSize: 12, letterSpacing: 2 }}>SETTINGS</button>
             <div style={{ fontSize: 11, color: '#4a5763', letterSpacing: 1, marginTop: 18 }}>{isTouch ? 'tap RESUME to return to the fight' : 'ESC resumes · this pause is safe, nothing is lost'}</div>
+          </>)}
           </div>
+          </div>
+        )}
+        {editingLayout && (
+          <ControlLayoutEditor
+            initial={layout}
+            fontFamily={UI_FONT}
+            onCancel={() => setEditingLayout(false)}
+            onSave={(l) => { setLayout(l); saveControlLayout(l); setEditingLayout(false); }}
+          />
         )}
         {debrief && !selectOpen && (
           <MissionDebrief
@@ -4644,7 +4773,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
           {/* left thumb: movement stick — arrows around an analog hub. Reads as
               "go this way" while drag distance still sets speed + diagonals. */}
           <div onTouchStart={joyStart} onTouchMove={joyMove} onTouchEnd={joyEnd} onTouchCancel={joyEnd}
-            style={{ ...touchBtn('#eab308', 116), left: 24, bottom: 24, background: 'radial-gradient(circle at 50% 45%, rgba(234,179,8,.07), rgba(6,10,16,.45))', border: '1px solid rgba(234,179,8,.28)' }}>
+            style={{ ...touchBtn('#eab308', 116), ...controlStyle('move', layout), background: 'radial-gradient(circle at 50% 45%, rgba(234,179,8,.07), rgba(6,10,16,.45))', border: '1px solid rgba(234,179,8,.28)' }}>
             {/* chevrons N/S/E/W */}
             <div ref={joyU} style={{ position: 'absolute', left: '50%', top: 6, marginLeft: -8, opacity: 0.3, color: '#eab308' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M6 15l6-6 6 6" /></svg></div>
             <div ref={joyD} style={{ position: 'absolute', left: '50%', bottom: 6, marginLeft: -8, opacity: 0.3, color: '#eab308' }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M6 9l6 6 6-6" /></svg></div>
@@ -4655,10 +4784,10 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
 
           {/* fire (primary) — also an aim pad: press to shoot, slide to steer */}
           <div onTouchStart={fireStart} onTouchMove={fireMove} onTouchEnd={fireEnd} onTouchCancel={fireEnd}
-            style={{ ...touchBtn('#ff6a4d', 78, true), right: 20, bottom: 24 }}><Icon name="crosshair" size={32} /></div>
+            style={{ ...touchBtn('#ff6a4d', 78, true), ...controlStyle('fire', layout) }}><Icon name="crosshair" size={32} /></div>
           {/* TARGET — tap to lock the nearest enemy, tap again to cycle. Above fire. */}
           <div {...tap('#eab308', () => { controls.current.lockCycle = true; })}
-            style={{ ...touchBtn('#eab308', 60), right: 108, bottom: 92, background: 'radial-gradient(circle at 50% 40%, rgba(234,179,8,.16), rgba(6,10,16,.5))', border: '1.5px solid rgba(234,179,8,.5)' }}>
+            style={{ ...touchBtn('#eab308', 60), ...controlStyle('target', layout), background: 'radial-gradient(circle at 50% 40%, rgba(234,179,8,.16), rgba(6,10,16,.5))', border: '1.5px solid rgba(234,179,8,.5)' }}>
             <Icon name="lock" size={22} />
           </div>
           {/* ADS (TOGGLE) — left of fire. Held-to-aim asks for three thumbs on a
@@ -4672,7 +4801,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
             onPointerUp={(e) => { pressFx(e.currentTarget as HTMLElement, false, '#cfe0ea'); paintAdsBtn(controls.current.ads); }}
             onPointerLeave={(e) => { pressFx(e.currentTarget as HTMLElement, false, '#cfe0ea'); paintAdsBtn(controls.current.ads); }}
             onPointerCancel={(e) => { pressFx(e.currentTarget as HTMLElement, false, '#cfe0ea'); paintAdsBtn(controls.current.ads); }}
-            style={{ ...touchBtn('#cfe0ea', 52), right: 108, bottom: 30, fontSize: 11 }}>ADS</div>
+            style={{ ...touchBtn('#cfe0ea', 52), ...controlStyle('ads', layout), fontSize: 11 }}>ADS</div>
           {/* CROUCH — the one control touch never had. It sits beside ADS rather than
               in the secondary column because it is a combat control, not a housekeeping
               one: it drops your eye line below cover, which is now how you break contact
@@ -4685,14 +4814,14 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
             onPointerUp={(e) => { pressFx(e.currentTarget as HTMLElement, false, '#8fb8d0'); paintCrouchBtn(controls.current.crouch); }}
             onPointerLeave={(e) => { pressFx(e.currentTarget as HTMLElement, false, '#8fb8d0'); paintCrouchBtn(controls.current.crouch); }}
             onPointerCancel={(e) => { pressFx(e.currentTarget as HTMLElement, false, '#8fb8d0'); paintCrouchBtn(controls.current.crouch); }}
-            style={{ ...touchBtn('#8fb8d0', 52), right: 170, bottom: 30, fontSize: 9, letterSpacing: 0 }}>CROUCH</div>
+            style={{ ...touchBtn('#8fb8d0', 52), ...controlStyle('crouch', layout), fontSize: 9, letterSpacing: 0 }}>CROUCH</div>
           {/* secondary actions — a slim column hugging the right edge, up off the gun */}
           <div {...tap('#ffb454', () => { controls.current.reload = true; })}
-            style={{ ...touchBtn('#ffb454', 44), right: 22, bottom: 116 }}><Icon name="refresh" size={19} /></div>
+            style={{ ...touchBtn('#ffb454', 44), ...controlStyle('reload', layout) }}><Icon name="refresh" size={19} /></div>
           <div {...tap('#5fe0a8', () => { controls.current.swap = true; })}
-            style={{ ...touchBtn('#5fe0a8', 44), right: 22, bottom: 170 }}><Icon name="swap" size={19} /></div>
+            style={{ ...touchBtn('#5fe0a8', 44), ...controlStyle('swap', layout) }}><Icon name="swap" size={19} /></div>
           <div {...tap('#8fb8d0', () => { controls.current.fireMode = true; })}
-            style={{ ...touchBtn('#8fb8d0', 42), right: 24, bottom: 222 }}><Icon name="firemode" size={17} /></div>
+            style={{ ...touchBtn('#8fb8d0', 42), ...controlStyle('fireMode', layout) }}><Icon name="firemode" size={17} /></div>
 
           {/* attachment toggles — compact top-left row, tucked under the rank bar */}
           <div style={{ position: 'absolute', left: 14, top: 92, display: 'flex', gap: 7 }}>

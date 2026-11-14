@@ -65,6 +65,8 @@ import { GUN_FEEL } from '@/engine/combat/GunFeel'
 import { FpsAudio } from '@/engine/audio/FpsAudio'
 import type { GunId } from '@/engine/combat'
 import type { ArenaInput, HitEvent, PlayerSnapshot } from '@/hooks/useArenaSocket'
+import { SMOOTH_RATE, loadAimSettings, type AimSettings } from '../input/aimSettings'
+import { controlStyle, loadControlLayout, type ControlLayout } from '../input/controlLayout'
 
 const OPERATOR_GLB = '/characters/glb/operator.glb'
 
@@ -173,6 +175,13 @@ interface InputRefs {
    *  cannot use while playing"). */
   touchCrouch: MutableRefObject<boolean>
   touchAds: MutableRefObject<boolean>
+  /** Touch-drag look, kept apart from the mouse so it can be smoothed (mouse
+   *  stays raw) — the same split ValorScene uses. */
+  touchDX: MutableRefObject<number>
+  touchDY: MutableRefObject<number>
+  /** The player's saved aim settings (set in Operations → pause → SETTINGS).
+   *  Read once at mount: there is no pausing a live staked match to change them. */
+  aim: MutableRefObject<AimSettings>
 }
 
 function useInputRefs(): InputRefs {
@@ -188,6 +197,9 @@ function useInputRefs(): InputRefs {
     wantReload: useRef(false),
     touchCrouch: useRef(false),
     touchAds: useRef(false),
+    touchDX: useRef(0),
+    touchDY: useRef(0),
+    aim: useRef<AimSettings>(loadAimSettings()),
   }
 }
 
@@ -234,8 +246,14 @@ export function ArenaScene(props: ArenaSceneProps) {
     <div style={{ position: 'fixed', inset: 0, background: THEME.fog[0], cursor: isTouch ? 'default' : 'none' }}>
       <Canvas
         shadows
-        gl={{ antialias: false, powerPreference: 'high-performance' }}
-        dpr={[1, 2]}
+        // Face-Off renders with NO post-processing composer, so the canvas's own
+        // MSAA is the cheapest edge smoothing available — it used to be off, which
+        // left every wall and crate edge a crawling staircase. Touch is capped at
+        // DPR 1.5 (Operations' healthy-phone tier): MSAA at 1.5 is both cleaner and
+        // cheaper than the old unsmoothed DPR 2, and a phone dropping frames in a
+        // staked match is the last place to spend fill rate.
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        dpr={isTouch ? [1, 1.5] : [1, 2]}
         camera={{ position: [0, EYE_HEIGHT, ARENA_HALF_Z * 0.85], fov: 60, near: 0.01, far: 200 }}
       >
         <Suspense fallback={null}>
@@ -286,11 +304,16 @@ function ArenaHud({ hitFxDom }: { hitFxDom: MutableRefObject<HitFxDom> }) {
 // the only ones NOT reproduced here.
 
 function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) {
+  // The player's custom button layout (Operations → pause → SETTINGS →
+  // CUSTOMIZE BUTTONS), so their thumbs land in the same places in both modes.
+  // Face-Off has no TARGET / SWAP / MODE buttons; those layout entries are unused.
+  const [layout] = useState<ControlLayout>(loadControlLayout)
   const joyRef = useRef<HTMLDivElement>(null)
   const joyKnobRef = useRef<HTMLDivElement>(null)
   const joyId = useRef<number | null>(null)
   const joyCenter = useRef({ x: 0, y: 0 })
-  const JOY_R = 58
+  // Knob travel scales with a resized stick, so its rim is still full speed.
+  const JOY_R = 58 * (layout.placements.move?.scale ?? 1)
 
   const adsBtnRef = useRef<HTMLDivElement>(null)
   const crouchBtnRef = useRef<HTMLDivElement>(null)
@@ -338,8 +361,8 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
   }
   const lookMove = (e: React.TouchEvent) => {
     for (const t of Array.from(e.changedTouches)) if (t.identifier === lookId.current) {
-      input.mouseDX.current += t.clientX - lookLast.current.x
-      input.mouseDY.current += t.clientY - lookLast.current.y
+      input.touchDX.current += t.clientX - lookLast.current.x
+      input.touchDY.current += t.clientY - lookLast.current.y
       lookLast.current = { x: t.clientX, y: t.clientY }
     }
   }
@@ -362,8 +385,10 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
   }
   const fireMove = (e: React.TouchEvent) => {
     for (const t of Array.from(e.changedTouches)) if (t.identifier === fireId.current) {
-      input.mouseDX.current += t.clientX - fireLast.current.x
-      input.mouseDY.current += t.clientY - fireLast.current.y
+      // FIRING speed applies only to drags on the fire button, as in Operations.
+      const f = input.aim.current.firing
+      input.touchDX.current += (t.clientX - fireLast.current.x) * f
+      input.touchDY.current += (t.clientY - fireLast.current.y) * f
       fireLast.current = { x: t.clientX, y: t.clientY }
     }
   }
@@ -402,7 +427,7 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
       <div
         ref={joyRef}
         onTouchStart={joyStart} onTouchMove={joyMove} onTouchEnd={joyEnd} onTouchCancel={joyEnd}
-        style={{ ...touchBtn('#eab308', 116), left: 24, bottom: 24, background: 'radial-gradient(circle at 50% 45%, rgba(234,179,8,.07), rgba(6,10,16,.45))', border: '1px solid rgba(234,179,8,.28)' }}
+        style={{ ...touchBtn('#eab308', 116), ...controlStyle('move', layout), background: 'radial-gradient(circle at 50% 45%, rgba(234,179,8,.07), rgba(6,10,16,.45))', border: '1px solid rgba(234,179,8,.28)' }}
       >
         <div ref={joyKnobRef} style={{
           position: 'absolute', left: '50%', top: '50%', width: 44, height: 44, marginLeft: -22, marginTop: -22,
@@ -415,7 +440,7 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
           bottom-right, same spot the real fire pad sits. */}
       <div
         onTouchStart={fireStart} onTouchMove={fireMove} onTouchEnd={fireEnd} onTouchCancel={fireEnd}
-        style={{ ...touchBtn('#ff6a4d', 78, true), right: 20, bottom: 24 }}
+        style={{ ...touchBtn('#ff6a4d', 78, true), ...controlStyle('fire', layout) }}
       >
         <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
           <circle cx="12" cy="12" r="7" />
@@ -431,7 +456,7 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
           input.touchAds.current = next
           paintToggle(adsBtnRef.current, next, '#cfe0ea')
         })}
-        style={{ ...touchBtn('#cfe0ea', 52), right: 108, bottom: 30, fontSize: 11 }}
+        style={{ ...touchBtn('#cfe0ea', 52), ...controlStyle('ads', layout), fontSize: 11 }}
       >
         ADS
       </div>
@@ -444,7 +469,7 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
           input.touchCrouch.current = next
           paintToggle(crouchBtnRef.current, next, '#8fb8d0')
         })}
-        style={{ ...touchBtn('#8fb8d0', 52), right: 170, bottom: 30, fontSize: 9, letterSpacing: 0 }}
+        style={{ ...touchBtn('#8fb8d0', 52), ...controlStyle('crouch', layout), fontSize: 9, letterSpacing: 0 }}
       >
         CROUCH
       </div>
@@ -452,7 +477,7 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
       {/* Reload — icon button, secondary column above the gun. */}
       <div
         {...tap('#ffb454', () => { input.wantReload.current = true })}
-        style={{ ...touchBtn('#ffb454', 44), right: 22, bottom: 116 }}
+        style={{ ...touchBtn('#ffb454', 44), ...controlStyle('reload', layout) }}
       >
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M21 12a9 9 0 11-3-6.7" strokeLinecap="round" />
@@ -471,7 +496,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
     onLocalHp, onAmmo, onOpponentHp, onHit, input, isTouch, equippedGun, audio, hitFxDom,
   } = props
   const { camera, gl, scene } = useThree()
-  const { keys, mouseDX, mouseDY, touchMoveX, touchMoveY, firing, touchFiring, rightMouseDown, wantReload, touchCrouch, touchAds } = input
+  const { keys, mouseDX, mouseDY, touchMoveX, touchMoveY, firing, touchFiring, rightMouseDown, wantReload, touchCrouch, touchAds, touchDX, touchDY, aim: aimRef } = input
   const gunId = equippedGun ?? 'assault_rifle'
 
   const locked = useRef(false)
@@ -674,12 +699,21 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
     adsCur.current += ((adsWant ? 1 : 0) - adsCur.current) * Math.min(1, dt * 10)
     const eyeY = THREE.MathUtils.lerp(EYE_HEIGHT, EYE_HEIGHT_CROUCH, crouchCur.current)
 
-    const lookSens = (isTouch ? TOUCH_LOOK_SENS : LOOK_SENS) * THREE.MathUtils.lerp(1, ADS_LOOK_SENS_MULT, adsCur.current)
-
-    // Aim — accumulate mouse/touch-drag delta into yaw/pitch, exactly like
-    // ValorScene does for both input sources.
-    yaw.current -= mouseDX.current * lookSens
-    pitch.current -= mouseDY.current * lookSens
+    // Aim — the player's saved settings (camera / ADS speed, smoothing,
+    // invert-Y), applied exactly as ValorScene applies them, so Face-Off feels
+    // like the rest of the game. The server still clamps turn rate
+    // (arena_server.rs MAX_YAW_RATE), so no setting can out-turn the referee.
+    const aim = aimRef.current
+    const adsMult = THREE.MathUtils.lerp(1, ADS_LOOK_SENS_MULT * aim.ads, adsCur.current)
+    const sens = adsMult * aim.look
+    const invY = aim.invertY ? -1 : 1
+    // Touch drag eases out of a buffer at a real-time rate (frame-rate
+    // independent); mouse stays raw 1:1.
+    const ease = 1 - Math.exp(-dt * SMOOTH_RATE[aim.smoothing])
+    const tx = touchDX.current * ease, ty = touchDY.current * ease
+    touchDX.current -= tx; touchDY.current -= ty
+    yaw.current -= (mouseDX.current * LOOK_SENS + tx * TOUCH_LOOK_SENS) * sens
+    pitch.current -= (mouseDY.current * LOOK_SENS + ty * TOUCH_LOOK_SENS) * sens * invY
     mouseDX.current = 0
     mouseDY.current = 0
 
