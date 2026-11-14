@@ -50,6 +50,21 @@ async fn member_count(db: &sqlx::PgPool, group_id: Uuid) -> i64 {
         .unwrap_or(0)
 }
 
+// ── GET /groups ────────────────────────────────────────────────────────────────
+// Public: every active community, for the picker on a player's profile.
+pub async fn list_public(state: web::Data<AppState>) -> HttpResponse {
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT g.slug, g.name, g.description, COUNT(m.wallet_address)
+         FROM player_groups g LEFT JOIN group_members m ON m.group_id = g.id
+         WHERE g.active GROUP BY g.id ORDER BY g.created_at",
+    )
+    .fetch_all(&state.db).await.unwrap_or_default();
+    let groups: Vec<_> = rows.iter().map(|(slug, name, description, n)| json!({
+        "slug": slug, "name": name, "description": description, "members": n,
+    })).collect();
+    HttpResponse::Ok().json(json!({"groups": groups}))
+}
+
 // ── GET /groups/:slug ──────────────────────────────────────────────────────────
 // Public: what the join page shows before anyone signs in.
 pub async fn get_group(state: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {

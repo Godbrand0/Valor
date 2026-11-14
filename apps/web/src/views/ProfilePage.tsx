@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useMyGroup } from '@/hooks/useGroups'
 import PendingGroupBanner from '@/components/groups/PendingGroupBanner'
+import CommunityPicker from '@/components/groups/CommunityPicker'
 import { shareCard } from '@/lib/shareCard'
 import { motion } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
@@ -184,6 +185,8 @@ export default function ProfilePage() {
             </div>
           </div>
         </div>
+
+        <CommunityPicker />
 
         {/* Stat grid */}
         <div className="grid grid-cols-3 gap-2">

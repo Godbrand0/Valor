@@ -229,6 +229,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         )
         .service(
             web::scope("/groups")
+                .route("", web::get().to(groups::list_public))
                 .route("/{slug}", web::get().to(groups::get_group))
                 .route("/{slug}/board", web::get().to(groups::board)),
         );

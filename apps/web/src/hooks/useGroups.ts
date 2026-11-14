@@ -17,6 +17,19 @@ export interface GroupPublic extends GroupInfo {
   members: number
 }
 
+/** Every active community, for the picker on Profile. */
+export function useGroupList() {
+  return useQuery({
+    queryKey: ['groups'],
+    queryFn: async (): Promise<GroupPublic[]> => {
+      const res = await fetch(`${API}/groups`)
+      if (!res.ok) throw new Error('Could not load communities')
+      return (await res.json()).groups ?? []
+    },
+    staleTime: 60_000,
+  })
+}
+
 /** The group a join link points at. Public, so the page can render before sign-in. */
 export function useGroup(slug: string | undefined) {
   return useQuery({
