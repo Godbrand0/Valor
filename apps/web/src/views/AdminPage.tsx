@@ -1,11 +1,14 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import Link from 'next/link'
 import { motion } from 'framer-motion'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useActiveWalletClient } from '@/hooks/useActiveWalletClient'
 import { formatGDollarNumber } from '@/utils/format'
+import {
+  BTN_DANGER, BTN_GHOST, BTN_GOLD, BTN_OK, BTN_WARN, INPUT, LABEL, PANEL, PILL, PILL_ON, SUBPANEL,
+  Badge, PageHeader, PanelToggle, Stat, compact,
+} from '@/components/admin/ui'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? ''
 const SESSION_KEY = 'valor-admin-session'
@@ -185,8 +188,7 @@ function DownloadButton({ onClick, disabled }: { onClick: () => void; disabled?:
     <button
       onClick={onClick}
       disabled={disabled}
-      className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white border disabled:opacity-50 shrink-0"
-      style={{ borderColor: '#2a2a3a' }}
+      className={`${BTN_GHOST} shrink-0`}
     >
       ⤓ Download CSV
     </button>
@@ -206,13 +208,8 @@ function loadSession(): AdminSession | null {
   }
 }
 
-function StatTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-valor-surface border border-valor-border rounded-xl p-4 flex flex-col gap-1">
-      <p className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">{label}</p>
-      <p className="font-display font-black text-white text-2xl leading-none">{value}</p>
-    </div>
-  )
+function StatTile({ label, value, unit }: { label: string; value: string; unit?: string }) {
+  return <Stat label={label} value={value} unit={unit} />
 }
 
 export default function AdminPage() {
@@ -731,43 +728,44 @@ export default function AdminPage() {
 
   if (!session) {
     return (
-      <div className="fixed inset-0 flex flex-col items-center justify-center gap-5 px-6 text-center" style={{ background: '#04030c' }}>
-        <p className="font-display font-black text-white text-2xl">Valor Admin</p>
-        <p className="text-slate-400 text-sm max-w-xs">Sign a message with your admin wallet to view season and G$ volume stats.</p>
-        {loginError && <p className="text-red-400 text-xs">{loginError}</p>}
-        <motion.button
-          onClick={handleAdminLogin}
-          disabled={loggingIn || !address}
-          whileTap={{ scale: 0.97 }}
-          className="px-6 py-3 rounded-xl font-black text-sm uppercase tracking-widest text-black disabled:opacity-50"
-          style={{ background: '#eab308' }}
-        >
-          {loggingIn ? 'Signing…' : 'Sign in as Admin'}
-        </motion.button>
+      <div className="fixed inset-0 z-40 flex flex-col items-center justify-center px-6 text-center overflow-hidden" style={{ background: '#04030c' }}>
+        <div aria-hidden className="absolute inset-0 opacity-35" style={{ background: 'url(/art/hero.webp) 70% 20% / cover' }} />
+        <div aria-hidden className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at center, rgba(4,3,12,0.5), #04030c 78%)' }} />
+        <div className="relative flex flex-col items-center gap-4 max-w-sm">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/valor-mark.png" alt="" className="w-20 drop-shadow-[0_0_24px_rgba(234,179,8,0.5)]" />
+          <p className="text-[10px] uppercase tracking-[0.34em] font-bold text-amber-500">Admin console</p>
+          <h1 className="font-[family-name:var(--font-family-display)] font-black text-white text-3xl tracking-wide -mt-2">Valor Admin</h1>
+          <p className="text-slate-400 text-sm">Sign a message with your admin wallet to view season and G$ volume stats.</p>
+          {loginError && <p className="text-red-400 text-xs">{loginError}</p>}
+          <motion.button
+            onClick={handleAdminLogin}
+            disabled={loggingIn || !address}
+            whileTap={{ scale: 0.97 }}
+            className={`${BTN_GOLD} px-7 py-3 text-sm uppercase tracking-widest mt-1`}
+          >
+            {loggingIn ? 'Signing…' : 'Sign in as Admin'}
+          </motion.button>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col gap-6 max-w-3xl">
-      <div>
-        <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-500">Admin</p>
-        <h1 className="font-display font-black text-white text-2xl tracking-wide">Season Stats</h1>
-        <Link href="/admin/analytics" className="inline-block mt-2 px-3 py-1.5 rounded-lg text-xs font-bold text-black" style={{ background: '#eab308' }}>
-          On-chain analytics
-        </Link>
-      </div>
+    <div className="flex flex-col gap-6 max-w-3xl w-full">
+      <PageHeader
+        kicker="Operations"
+        title="Season ops"
+        sub="Schedule seasons, set prize pools and run payouts. These controls move real G$, so every payout shows its exact transfer before you confirm."
+      />
 
       {/* Season picker */}
-      <div className="bg-valor-surface border border-valor-border rounded-xl p-4 flex flex-col gap-3">
+      <div className={`${PANEL} flex flex-col gap-3`}>
+        <p className={LABEL}>Season</p>
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setSelectedSeason('all')}
-            className="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
-            style={{
-              background: selectedSeason === 'all' ? '#eab308' : 'rgba(255,255,255,0.05)',
-              color: selectedSeason === 'all' ? '#000' : '#94a3b8',
-            }}
+            className={selectedSeason === 'all' ? PILL_ON : PILL}
           >
             All time
           </button>
@@ -775,11 +773,7 @@ export default function AdminPage() {
             <button
               key={s.id}
               onClick={() => setSelectedSeason(s.id)}
-              className="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
-              style={{
-                background: selectedSeason === s.id ? '#eab308' : 'rgba(255,255,255,0.05)',
-                color: selectedSeason === s.id ? '#000' : '#94a3b8',
-              }}
+              className={selectedSeason === s.id ? PILL_ON : PILL}
             >
               {s.name}{!s.ends_at ? ' · open' : ''}
             </button>
@@ -798,7 +792,7 @@ export default function AdminPage() {
           const live = opensAt <= now && (closesAt === null || closesAt >= now)
           const upcoming = opensAt > now
           return (
-            <div className="flex flex-col gap-2 mb-3 p-3 rounded-xl border" style={{ borderColor: 'rgba(42,42,58,0.8)', background: 'rgba(0,0,0,0.25)' }}>
+            <div className={`${SUBPANEL} flex flex-col gap-2 mb-3`}>
               <p className="text-xs text-slate-400">
                 <span className="text-white font-bold">{sn.name}</span>
                 {' · '}
@@ -812,8 +806,7 @@ export default function AdminPage() {
                   <button
                     onClick={() => handleReschedule(sn, new Date(Date.now() - 60_000).toISOString())}
                     disabled={busy}
-                    className="px-3 py-1.5 rounded-lg text-xs font-bold text-black disabled:opacity-50"
-                    style={{ background: '#34d399' }}
+                    className={BTN_OK}
                   >
                     Open now (for testing)
                   </button>
@@ -825,8 +818,7 @@ export default function AdminPage() {
                       if (back) handleReschedule(sn, new Date(back).toISOString())
                     }}
                     disabled={busy}
-                    className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-200 border disabled:opacity-50"
-                    style={{ borderColor: '#2a2a3a' }}
+                    className={BTN_GHOST}
                   >
                     Close back to scheduled start
                   </button>
@@ -841,8 +833,7 @@ export default function AdminPage() {
                       if (window.confirm(`Close "${sn.name}" at ${t.toLocaleString()}?`)) void handleReschedule(sn, sn.starts_at, t.toISOString())
                     }}
                     disabled={busy}
-                    className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-200 border disabled:opacity-50"
-                    style={{ borderColor: '#2a2a3a' }}
+                    className={BTN_GHOST}
                   >
                     Change closing time
                   </button>
@@ -850,16 +841,14 @@ export default function AdminPage() {
                 <button
                   onClick={() => handleResetProgress(sn)}
                   disabled={busy}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold text-amber-300 border disabled:opacity-50"
-                  style={{ borderColor: 'rgba(234,179,8,0.4)' }}
+                  className={BTN_WARN}
                 >
                   Wipe test progress
                 </button>
                 <button
                   onClick={() => handleDeleteSeason(sn)}
                   disabled={busy}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold text-red-300 border disabled:opacity-50"
-                  style={{ borderColor: 'rgba(248,113,113,0.35)' }}
+                  className={BTN_DANGER}
                 >
                   Delete season
                 </button>
@@ -873,40 +862,40 @@ export default function AdminPage() {
               <div className="flex flex-col gap-2">
                 <div className="grid grid-cols-2 gap-2">
                   <label className="flex flex-col gap-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">Winners paid (tier 1)</span>
+                    <span className={LABEL}>Winners paid (tier 1)</span>
                     <input type="number" min={1} max={20} value={fundTier1Count}
                       onChange={(e) => setFundTier1Count(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+                    <span className={LABEL}>G$ each</span>
                     <input type="number" min={0} step={1000} value={fundTier1Each}
                       onChange={(e) => setFundTier1Each(Math.max(0, Number(e.target.value) || 0))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">Next winners (tier 2, optional)</span>
+                    <span className={LABEL}>Next winners (tier 2, optional)</span>
                     <input type="number" min={0} max={20} value={fundTier2Count}
                       onChange={(e) => setFundTier2Count(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+                    <span className={LABEL}>G$ each</span>
                     <input type="number" min={0} step={1000} value={fundTier2Each}
                       onChange={(e) => setFundTier2Each(Math.max(0, Number(e.target.value) || 0))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">Next winners (tier 3, optional)</span>
+                    <span className={LABEL}>Next winners (tier 3, optional)</span>
                     <input type="number" min={0} max={20} value={fundTier3Count}
                       onChange={(e) => setFundTier3Count(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+                    <span className={LABEL}>G$ each</span>
                     <input type="number" min={0} step={500} value={fundTier3Each}
                       onChange={(e) => setFundTier3Each(Math.max(0, Number(e.target.value) || 0))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                 </div>
                 <div className="flex items-center justify-between gap-3">
@@ -919,8 +908,7 @@ export default function AdminPage() {
                   <button
                     onClick={handleFundSeason}
                     disabled={seasonFunding || fundPool <= 0}
-                    className="px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-50"
-                    style={{ background: '#eab308' }}
+                    className={BTN_GOLD}
                   >
                     {seasonFunding ? 'Setting…' : 'Set pool & split'}
                   </button>
@@ -935,11 +923,11 @@ export default function AdminPage() {
             has genuinely closed: winners freeze on the first run and each chunk burns
             a one-shot on-chain reference, so an early payout cannot be corrected. */}
         {preview && preview.winner_count > 0 && (
-          <div className="mb-3 p-3 rounded-xl border" style={{ borderColor: 'rgba(234,179,8,0.35)', background: 'rgba(234,179,8,0.04)' }}>
+          <div className="mb-3 p-3.5 rounded-xl border border-amber-500/35 bg-amber-500/[0.04]">
             <div className="flex items-center justify-between gap-3 mb-2">
               <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400">Prize payout</p>
               {preview.season.payout_status === 'paid' && (
-                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Paid</span>
+                <Badge tone="green">Paid</Badge>
               )}
             </div>
 
@@ -1001,8 +989,7 @@ export default function AdminPage() {
             <button
               onClick={handlePayout}
               disabled={paying || busy || !preview.can_pay}
-              className="w-full px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ background: '#fbbf24' }}
+              className={`${BTN_GOLD} w-full py-2.5`}
             >
               {paying ? 'Paying… this takes a few minutes'
                 : preview.unpaid_g === 0 ? 'All winners paid'
@@ -1012,67 +999,62 @@ export default function AdminPage() {
           </div>
         )}
 
-        <div className="flex flex-col gap-2 pt-3 border-t" style={{ borderColor: 'rgba(42,42,58,0.8)' }}>
-          <button
-            onClick={() => setShowScheduler((v) => !v)}
-            className="text-[10px] uppercase tracking-[0.3em] font-bold text-slate-500 hover:text-slate-300 text-left"
-          >
-            {showScheduler ? '▾ Schedule a season' : '▸ Schedule a season'}
-          </button>
+        <div className="flex flex-col gap-3 pt-4 border-t border-valor-border/70">
+          <PanelToggle open={showScheduler} onClick={() => setShowScheduler((v) => !v)} title="Schedule a season" hint="Create a scheduled window and prize split" />
           {showScheduler && (<>
           <input
             type="text"
             value={newSeasonName}
             onChange={(e) => setNewSeasonName(e.target.value)}
             placeholder="Season name"
-            className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white placeholder:text-slate-600 focus:outline-none"
+            className={INPUT}
           />
           <div className="grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">Opens (your local time)</span>
+              <span className={LABEL}>Opens (your local time)</span>
               <input type="datetime-local" value={seasonStart} onChange={(e) => setSeasonStart(e.target.value)}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">Closes</span>
+              <span className={LABEL}>Closes</span>
               <input type="datetime-local" value={seasonEnd} onChange={(e) => setSeasonEnd(e.target.value)}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">Winners paid (tier 1)</span>
+              <span className={LABEL}>Winners paid (tier 1)</span>
               <input type="number" min={1} max={20} value={seasonWinners}
                 onChange={(e) => setSeasonWinners(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+              <span className={LABEL}>G$ each</span>
               <input type="number" min={0} step={1000} value={seasonPerWinner}
                 onChange={(e) => setSeasonPerWinner(Math.max(0, Number(e.target.value) || 0))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">Next winners paid (tier 2, optional)</span>
+              <span className={LABEL}>Next winners paid (tier 2, optional)</span>
               <input type="number" min={0} max={20} value={seasonWinners2}
                 onChange={(e) => setSeasonWinners2(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+              <span className={LABEL}>G$ each</span>
               <input type="number" min={0} step={1000} value={seasonPerWinner2}
                 onChange={(e) => setSeasonPerWinner2(Math.max(0, Number(e.target.value) || 0))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">Next winners paid (tier 3, optional)</span>
+              <span className={LABEL}>Next winners paid (tier 3, optional)</span>
               <input type="number" min={0} max={20} value={seasonWinners3}
                 onChange={(e) => setSeasonWinners3(Math.max(0, Math.min(20, Number(e.target.value) || 0)))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+              <span className={LABEL}>G$ each</span>
               <input type="number" min={0} step={1000} value={seasonPerWinner3}
                 onChange={(e) => setSeasonPerWinner3(Math.max(0, Number(e.target.value) || 0))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
           </div>
           <p className="text-xs text-slate-500">
@@ -1087,8 +1069,7 @@ export default function AdminPage() {
             <button
               onClick={handleCreateSeason}
               disabled={busy || !newSeasonName.trim()}
-              className="px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-50"
-              style={{ background: '#eab308' }}
+              className={BTN_GOLD}
             >
               Schedule season
             </button>
@@ -1096,8 +1077,7 @@ export default function AdminPage() {
               <button
                 onClick={() => handleEndSeason(openSeason.id)}
                 disabled={busy}
-                className="px-3 py-2 rounded-lg text-xs font-bold text-slate-300 hover:text-white border disabled:opacity-50"
-                style={{ borderColor: '#2a2a3a' }}
+                className={BTN_GHOST}
               >
                 End &quot;{openSeason.name}&quot;
               </button>
@@ -1110,13 +1090,8 @@ export default function AdminPage() {
       {/* Referral campaigns — fund a prize pool, pay it out to the referral
           leaderboard once closed. Referrals stopped minting G$ on signup
           (2026-08-25); this is now the only way a referral ever pays. */}
-      <div className="flex flex-col gap-3 rounded-xl border p-4" style={{ borderColor: 'rgba(42,42,58,0.8)', background: 'rgba(10,10,18,0.4)' }}>
-        <button
-          onClick={() => setShowReferralCampaigns((v) => !v)}
-          className="text-[10px] uppercase tracking-[0.3em] font-bold text-slate-500 hover:text-slate-300 text-left"
-        >
-          {showReferralCampaigns ? '▾ Referral campaigns' : '▸ Referral campaigns'}
-        </button>
+      <div className={`${PANEL} flex flex-col gap-3`}>
+        <PanelToggle open={showReferralCampaigns} onClick={() => setShowReferralCampaigns((v) => !v)} title="Referral campaigns" hint="Fund a prize pool and pay the referral leaderboard" />
         {showReferralCampaigns && (<>
           {referralCampaigns.length === 0 ? (
             <p className="text-slate-600 text-xs">No referral campaigns yet.</p>
@@ -1126,11 +1101,7 @@ export default function AdminPage() {
                 <button
                   key={c.id}
                   onClick={() => setSelectedReferralCampaign(c.id)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
-                  style={{
-                    background: selectedReferralCampaign === c.id ? '#eab308' : 'rgba(255,255,255,0.05)',
-                    color: selectedReferralCampaign === c.id ? '#000' : '#94a3b8',
-                  }}
+                  className={selectedReferralCampaign === c.id ? PILL_ON : PILL}
                 >
                   {c.name}{c.payout_status === 'paid' ? ' · paid' : ''}
                 </button>
@@ -1145,7 +1116,7 @@ export default function AdminPage() {
             const closesAt = new Date(c.ends_at).getTime()
             const live = new Date(c.starts_at).getTime() <= now && closesAt >= now
             return (
-              <div className="flex flex-col gap-2 p-3 rounded-xl border" style={{ borderColor: 'rgba(42,42,58,0.8)', background: 'rgba(0,0,0,0.25)' }}>
+              <div className={`${SUBPANEL} flex flex-col gap-2`}>
                 <p className="text-xs text-slate-400">
                   <span className="text-white font-bold">{c.name}</span>
                   {' · '}
@@ -1154,16 +1125,15 @@ export default function AdminPage() {
                 </p>
                 <div className="flex items-center gap-2">
                   <label className="flex flex-col gap-1 flex-1">
-                    <span className="text-[10px] uppercase tracking-widest text-slate-600">Prize pool (G$)</span>
+                    <span className={LABEL}>Prize pool (G$)</span>
                     <input type="number" min={0} step={1000} value={referralFundAmount}
                       onChange={(e) => setReferralFundAmount(Math.max(0, Number(e.target.value) || 0))}
-                      className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                      className={INPUT} />
                   </label>
                   <button
                     onClick={handleFundReferralCampaign}
                     disabled={referralFunding || referralFundAmount === c.prize_pool_g}
-                    className="px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-50 self-end"
-                    style={{ background: '#eab308' }}
+                    className={`${BTN_GOLD} self-end`}
                   >
                     {referralFunding ? 'Setting…' : 'Set pool'}
                   </button>
@@ -1175,11 +1145,11 @@ export default function AdminPage() {
           {/* Same confirm-before-you-pay shape as the season payout: exact winners,
               exact amounts, and whether the pool + gas can actually cover it. */}
           {referralPreview && referralPreview.winner_count > 0 && (
-            <div className="p-3 rounded-xl border" style={{ borderColor: 'rgba(234,179,8,0.35)', background: 'rgba(234,179,8,0.04)' }}>
+            <div className="p-3.5 rounded-xl border border-amber-500/35 bg-amber-500/[0.04]">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-400">Campaign payout</p>
                 {referralPreview.campaign.payout_status === 'paid' && (
-                  <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Paid</span>
+                  <Badge tone="green">Paid</Badge>
                 )}
               </div>
 
@@ -1232,8 +1202,7 @@ export default function AdminPage() {
               <button
                 onClick={handleReferralPayout}
                 disabled={referralPaying || !referralPreview.can_pay}
-                className="w-full px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ background: '#fbbf24' }}
+                className={`${BTN_GOLD} w-full py-2.5`}
               >
                 {referralPaying ? 'Paying… this takes a few minutes'
                   : referralPreview.unpaid_g === 0 ? 'All winners paid'
@@ -1249,33 +1218,28 @@ export default function AdminPage() {
       </div>
 
       {/* One-off grants — bounties, external challenge prizes */}
-      <div className="flex flex-col gap-3 rounded-xl border p-4" style={{ borderColor: 'rgba(42,42,58,0.8)', background: 'rgba(10,10,18,0.4)' }}>
-        <button
-          onClick={() => setShowGrants((v) => !v)}
-          className="text-[10px] uppercase tracking-[0.3em] font-bold text-slate-500 hover:text-slate-300 text-left"
-        >
-          {showGrants ? '▾ One-off grants (bounties, challenge prizes)' : '▸ One-off grants (bounties, challenge prizes)'}
-        </button>
+      <div className={`${PANEL} flex flex-col gap-3`}>
+        <PanelToggle open={showGrants} onClick={() => setShowGrants((v) => !v)} title="One-off grants (bounties, challenge prizes)" hint="Pay specific wallets once, never twice" />
         {showGrants && (<>
           <textarea
             value={grantWallets}
             onChange={(e) => setGrantWallets(e.target.value)}
             placeholder="Wallet addresses — one per line, or comma/space separated"
             rows={4}
-            className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white placeholder:text-slate-600 focus:outline-none font-mono"
+            className={`${INPUT} font-mono`}
           />
           <div className="grid grid-cols-2 gap-2">
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">G$ each</span>
+              <span className={LABEL}>G$ each</span>
               <input type="number" min={1} step={100} value={grantAmount}
                 onChange={(e) => setGrantAmount(Math.max(0, Number(e.target.value) || 0))}
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white focus:outline-none" />
+                className={INPUT} />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-[10px] uppercase tracking-widest text-slate-600">Reason</span>
+              <span className={LABEL}>Reason</span>
               <input type="text" value={grantReason} onChange={(e) => setGrantReason(e.target.value)}
                 placeholder="e.g. valor-challenge-aug-2026"
-                className="px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white placeholder:text-slate-600 focus:outline-none" />
+                className={INPUT} />
             </label>
           </div>
           <p className="text-xs text-slate-500">
@@ -1285,13 +1249,12 @@ export default function AdminPage() {
           <button
             onClick={handleGrantRewards}
             disabled={granting || !grantWallets.trim() || !grantReason.trim() || grantAmount <= 0}
-            className="px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-50 self-start"
-            style={{ background: '#eab308' }}
+            className={`${BTN_GOLD} self-start`}
           >
             {granting ? 'Paying…' : 'Pay wallets'}
           </button>
           {grantResults && (
-            <div className="flex flex-col gap-1 pt-2 border-t text-xs" style={{ borderColor: 'rgba(42,42,58,0.8)' }}>
+            <div className="flex flex-col gap-1 pt-3 border-t border-valor-border/70 text-xs">
               {grantResults.map((r) => (
                 <div key={r.wallet_address} className="flex items-center justify-between gap-2 font-mono">
                   <span className="text-slate-400 truncate">{r.wallet_address}</span>
@@ -1313,13 +1276,8 @@ export default function AdminPage() {
       </div>
 
       {/* Stuck Face-Off duel recovery */}
-      <div className="flex flex-col gap-3 rounded-xl border p-4" style={{ borderColor: 'rgba(42,42,58,0.8)', background: 'rgba(10,10,18,0.4)' }}>
-        <button
-          onClick={() => setShowVoidDuel((v) => !v)}
-          className="text-[10px] uppercase tracking-[0.3em] font-bold text-slate-500 hover:text-slate-300 text-left"
-        >
-          {showVoidDuel ? '▾ Void a stuck duel (refund both stakes)' : '▸ Void a stuck duel (refund both stakes)'}
-        </button>
+      <div className={`${PANEL} flex flex-col gap-3`}>
+        <PanelToggle open={showVoidDuel} onClick={() => setShowVoidDuel((v) => !v)} title="Void a stuck duel (refund both stakes)" hint="Recover a Face-Off duel stuck at accepted" />
         {showVoidDuel && (<>
           <p className="text-xs text-slate-500">
             For a Face-Off duel stuck at &quot;accepted&quot; with no live match and no resolution — e.g. a
@@ -1332,13 +1290,12 @@ export default function AdminPage() {
               value={voidDuelId}
               onChange={(e) => setVoidDuelId(e.target.value)}
               placeholder="Duel ID (UUID)"
-              className="flex-1 px-3 py-2 rounded-lg bg-black/30 border border-valor-border text-sm text-white placeholder:text-slate-600 focus:outline-none font-mono"
+              className={`${INPUT} flex-1 font-mono`}
             />
             <button
               onClick={handleVoidDuel}
               disabled={voiding || !voidDuelId.trim()}
-              className="px-3 py-2 rounded-lg text-xs font-bold text-black disabled:opacity-50 shrink-0"
-              style={{ background: '#eab308' }}
+              className={`${BTN_GOLD} shrink-0`}
             >
               {voiding ? 'Voiding…' : 'Void & refund'}
             </button>
@@ -1355,7 +1312,7 @@ export default function AdminPage() {
       {stats && (
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h3 className="font-display font-bold text-white text-sm">
+            <h3 className="font-[family-name:var(--font-family-display)] font-black text-white text-lg tracking-wide">
               {stats.season_name ?? 'All-Time'} Summary
             </h3>
             <DownloadButton onClick={handleDownloadStats} />
@@ -1366,17 +1323,17 @@ export default function AdminPage() {
             <StatTile label="Played Players" value={stats.played_players.toLocaleString()} />
             <StatTile label="Active Players" value={stats.active_players.toLocaleString()} />
             <StatTile label="Total Battles" value={stats.total_battles.toLocaleString()} />
-            <StatTile label="G$ Awarded" value={`${formatGDollarNumber(stats.total_g_awarded)} G$`} />
-            <StatTile label="G$ Volume Moved" value={`${formatGDollarNumber(stats.total_g_volume)} G$`} />
-            <StatTile label="G$ Transferred Out" value={`${formatGDollarNumber(stats.total_g_transferred_out)} G$`} />
+            <StatTile label="G$ Awarded" value={compact(stats.total_g_awarded)} unit="G$" />
+            <StatTile label="G$ Volume Moved" value={compact(stats.total_g_volume)} unit="G$" />
+            <StatTile label="G$ Transferred Out" value={compact(stats.total_g_transferred_out)} unit="G$" />
           </div>
         </div>
       )}
 
       {/* On-chain activity — mission records + G$ moves, each linked to Celoscan */}
-      <div className="bg-valor-surface border border-valor-border rounded-xl p-4">
+      <div className={PANEL}>
         <div className="flex items-center justify-between mb-3 gap-3">
-          <h3 className="font-display font-bold text-white text-sm">On-Chain Activity</h3>
+          <h3 className="font-[family-name:var(--font-family-display)] font-black text-white text-lg tracking-wide">On-Chain Activity</h3>
           <div className="flex items-center gap-3">
             <span className="text-[9px] uppercase tracking-widest text-slate-600 font-bold">Latest {onchain.length}</span>
             <DownloadButton onClick={handleDownloadActivity} disabled={busy} />
@@ -1392,7 +1349,7 @@ export default function AdminPage() {
                 href={`https://celoscan.io/tx/${r.tx_hash}`}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-valor-border hover:border-slate-500 transition-colors text-left"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-valor-border hover:border-amber-500/40 hover:bg-white/[0.03] transition-colors text-left"
                 style={{ background: 'rgba(8,10,16,0.6)' }}
               >
                 <span className="text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-sm shrink-0"

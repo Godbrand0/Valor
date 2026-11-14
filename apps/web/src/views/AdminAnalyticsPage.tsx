@@ -1,7 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
+import { useCallback, useEffect, useState } from 'react'
+import { BTN_GOLD, PANEL, PageHeader, SectionTitle, SignInCard, Stat, Badge, CountUp, compact } from '@/components/admin/ui'
+import { Explorer, Ring, Spark, type DayPoint } from '@/components/admin/charts'
 
 // Chain-only analytics, produced by the separate Analytics repo (github.com/MarvyNwaokobia/Analytics)
 // and published as JSON. Everything here is derived from Valor's contract events on Celo.
@@ -14,7 +15,7 @@ const FEED =
   'https://raw.githubusercontent.com/MarvyNwaokobia/Analytics/main/public/valor.json'
 const SESSION_KEY = 'valor-admin-session' // same key AdminPage writes
 
-interface Day { date: string; txs: number; newPlayers: number; activePlayers: number; gMoved: number; gSpent: number; marketplaceSpend: number; rewards: number }
+type Day = DayPoint
 interface Week { weekStart: string; active: number; newPlayers: number; retainedNextWeek: number | null }
 interface Target { id: string; label: string; kind: string; target: number; actual: number | null; baseline: number | null; pct: number | null }
 interface Epoch { epoch: number; start: string; end: string; status: string; txs: number; gMoved: number; gSpent: number; revenue: number; rewards: number; newPlayers: number; activePlayers: number }
@@ -40,43 +41,13 @@ function hasAdminSession(): boolean {
   }
 }
 
-function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="bg-valor-surface border border-valor-border rounded-xl p-4 flex flex-col gap-1">
-      <p className="text-[9px] uppercase tracking-widest text-slate-500 font-bold">{label}</p>
-      <p className="font-display font-black text-white text-2xl leading-none">{value}</p>
-      {sub && <p className="text-[10px] text-slate-500">{sub}</p>}
-    </div>
-  )
+const DEF_NAMES: Record<string, string> = {
+  player: 'Player', active: 'Active player', gMoved: 'G$ moved', gSpentInApp: 'G$ spent in app',
+  revenue: 'Marketplace revenue', offchain: 'Not on-chain yet',
 }
 
-// Bars with a hover title; one metric, from project start. No chart library needed.
-function Bars({ title, data, color = '#eab308', unit = '' }: { title: string; data: { label: string; v: number }[]; color?: string; unit?: string }) {
-  const max = Math.max(1, ...data.map((d) => d.v))
-  const total = data.reduce((s, d) => s + d.v, 0)
-  return (
-    <div className="bg-valor-surface border border-valor-border rounded-xl p-4 flex flex-col gap-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">{title}</p>
-        <p className="text-[10px] text-slate-500">total {n(total)}{unit}</p>
-      </div>
-      <div className="flex items-end gap-px h-24 overflow-hidden" role="img" aria-label={title}>
-        {data.map((d) => (
-          <div
-            key={d.label}
-            title={`${d.label}: ${n(d.v)}${unit}`}
-            className="flex-1 basis-0 min-w-0 rounded-t-sm"
-            style={{ height: `${Math.max(d.v > 0 ? 3 : 0, (d.v / max) * 100)}%`, background: color, opacity: d.v > 0 ? 1 : 0.15 }}
-          />
-        ))}
-      </div>
-      <div className="flex justify-between text-[9px] text-slate-600">
-        <span>{data[0]?.label}</span>
-        <span>{data[data.length - 1]?.label}</span>
-      </div>
-    </div>
-  )
-}
+const epochTone = (s: string) => (s === 'active' || s === 'live' ? 'green' : s === 'upcoming' ? 'slate' : 'gold') as 'green' | 'slate' | 'gold'
+const epochLabel = (s: string) => (s === 'active' || s === 'live' ? 'Live' : s === 'upcoming' ? 'Upcoming' : 'Complete')
 
 export default function AdminAnalyticsPage() {
   const [ready, setReady] = useState(false)
@@ -85,7 +56,6 @@ export default function AdminAnalyticsPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [fetchedAt, setFetchedAt] = useState<Date | null>(null)
-  const [range, setRange] = useState<'all' | '30' | '7'>('all')
 
   useEffect(() => { setAuthed(hasAdminSession()); setReady(true) }, [])
 
@@ -107,155 +77,125 @@ export default function AdminAnalyticsPage() {
 
   useEffect(() => { if (authed) void load() }, [authed, load])
 
-  const days = useMemo(() => {
-    if (!data) return []
-    return range === 'all' ? data.days : data.days.slice(-Number(range))
-  }, [data, range])
-
   if (!ready) return null
   if (!authed) {
-    return (
-      <div className="max-w-md mx-auto py-12 text-center">
-        <p className="text-slate-300 mb-4">Sign in on the admin page first.</p>
-        <Link href="/admin" className="inline-block px-5 py-3 rounded-xl font-display font-black text-black" style={{ background: '#eab308' }}>Go to admin</Link>
-      </div>
-    )
+    return <SignInCard title="On-chain analytics" body="Sign in on the Season ops page first, then come back here in the same tab." href="/admin" cta="Go to Season ops" />
   }
 
   const t = data?.totals ?? {}
   const tot = (k: string) => (t[k] as number | undefined) ?? 0
-  const series = (k: keyof Day) => days.map((d) => ({ label: d.date, v: d[k] as number }))
+  const spark = (k: keyof Day) => (data?.days ?? []).slice(-60).map((d) => d[k] as number)
+  const cumNew = (() => { let s = 0; return (data?.days ?? []).slice(-60).map((d) => (s += d.newPlayers)) })()
+  const age = data ? (Date.now() - new Date(data.asOf).getTime()) / 36e5 : 0
+  const checked = t.verifiedCheckedAt ? new Date(String(t.verifiedCheckedAt)).toLocaleDateString() : null
+
+  const hero: { label: string; value: number; unit?: string; sp: number[] }[] = [
+    { label: 'Players', value: tot('players'), sp: cumNew },
+    { label: 'G$ paid to players', value: tot('rewardsPaid'), unit: 'G$', sp: spark('rewards') },
+    { label: 'On-chain txs', value: tot('txs'), sp: spark('txs') },
+    { label: 'Active this month', value: tot('mau'), sp: spark('activePlayers') },
+  ]
 
   return (
-    <div className="flex flex-col gap-6 max-w-4xl">
-      <div className="flex items-end justify-between gap-3 flex-wrap">
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.3em] font-bold text-amber-500">Admin</p>
-          <h1 className="font-display font-black text-white text-2xl tracking-wide">On-chain Analytics</h1>
-          <p className="text-xs text-slate-500 mt-1">
-            Read straight from Valor&apos;s contracts on Celo{data ? `, since ${data.startDate}. Data as of ${new Date(data.asOf).toLocaleString()}; it updates every hour` : ''}.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Link href="/admin" className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white/5 text-slate-400">Season stats</Link>
-          <button onClick={() => void load()} disabled={loading} className="px-3 py-1.5 rounded-lg text-xs font-bold text-black disabled:opacity-50" style={{ background: '#eab308' }}>
-            {loading ? 'Loading' : fetchedAt ? `Refresh (checked ${fetchedAt.toLocaleTimeString()})` : 'Refresh'}
-          </button>
-        </div>
-      </div>
+    <div className="flex flex-col gap-8 max-w-5xl mx-auto w-full">
+      <PageHeader
+        kicker="Intelligence"
+        title="On-chain Analytics"
+        sub={<>Read straight from Valor&apos;s contracts on Celo{data ? `, since ${data.startDate}` : ''}. Updates every hour.</>}
+        actions={
+          <>
+            {data && (
+              <span className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-valor-border bg-black/30 text-[11px] font-semibold text-slate-400">
+                <span className={`w-2 h-2 rounded-full ${age > 12 ? 'bg-orange-400' : 'bg-emerald-400 animate-pulse'}`} />
+                Data as of {new Date(data.asOf).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              </span>
+            )}
+            <button onClick={() => void load()} disabled={loading} className={BTN_GOLD}>
+              <svg className={loading ? 'animate-spin' : ''} width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
+              {loading ? 'Loading' : fetchedAt ? `Refresh · ${fetchedAt.toLocaleTimeString()}` : 'Refresh'}
+            </button>
+          </>
+        }
+      />
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-300">
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
           Could not load analytics: {error}. The feed is published by the Analytics repo (<code>npm run refresh</code> then push <code>public/valor.json</code>).
+        </div>
+      )}
+
+      {!data && !error && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="h-28 rounded-xl border border-valor-border bg-white/[0.03] animate-pulse" />)}
         </div>
       )}
 
       {data && (
         <>
-          <section className="flex flex-col gap-3">
-            <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">Players</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Tile label="Players" value={n(tot('players'))} sub="characters claimed, same as Dune" />
-              <Tile label="Verified right now" value={n(tot('verifiedNow'))} sub="lower bound, GoodDollar whitelists lapse" />
-              <Tile label="Active this month" value={n(tot('mau'))} sub="players, last 30 days" />
-              <Tile label="Active this week" value={n(tot('wau'))} sub="players, last 7 days" />
-              <Tile label="Weekly retention" value={data.latestRetentionPct === null ? 'n/a' : `${data.latestRetentionPct}%`} sub="last full week, players" />
-              <Tile label="Battles recorded" value={n(tot('battles'))} />
-              <Tile label="Earners" value={n(tot('earners'))} sub="wallets paid by a reward pool" />
-              <Tile label="Items on-chain" value={n(tot('itemsRegistered'))} />
-            </div>
-          </section>
-
-          <section className="flex flex-col gap-3">
-            <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">Transactions and G$</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Tile label="On-chain txs" value={n(tot('txs'))} sub={`${n(tot('txsLast30d'))} in 30d, ${n(tot('txsLast7d'))} in 7d`} />
-              <Tile label="G$ moved" value={n(tot('gMoved'))} sub="in + out, team wallets excluded" />
-              <Tile label="G$ spent in app" value={n(tot('gSpentInApp'))} sub="players into Valor contracts" />
-              <Tile label="Spent in marketplace" value={n(tot('gSpentMarketplace'))} sub={`${n(tot('marketplacePurchases'))} purchases`} />
-              <Tile label="Marketplace revenue" value={n(tot('marketplaceRevenue'))} sub={`${n(tot('marketplaceRevenueWithdrawn'))} withdrawn`} />
-              <Tile label="Rewards paid out" value={n(tot('rewardsPaid'))} sub="from both reward pools" />
-            </div>
-          </section>
-
-          <section className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">Daily activity</h2>
-              <div className="flex gap-1">
-                {(['all', '30', '7'] as const).map((r) => (
-                  <button key={r} onClick={() => setRange(r)} className="px-2.5 py-1 rounded-md text-[11px] font-bold"
-                    style={{ background: range === r ? '#eab308' : 'rgba(255,255,255,0.05)', color: range === r ? '#000' : '#94a3b8' }}>
-                    {r === 'all' ? 'Since June' : `${r}d`}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="grid md:grid-cols-2 gap-3">
-              <Bars title="Transactions per day" data={series('txs')} />
-              <Bars title="Active players per day" data={series('activePlayers')} color="#22c55e" />
-              <Bars title="New players per day" data={series('newPlayers')} color="#38bdf8" />
-              <Bars title="G$ moved per day" data={series('gMoved')} color="#a78bfa" unit=" G$" />
-              <Bars title="G$ spent in marketplace per day" data={series('marketplaceSpend')} color="#f97316" unit=" G$" />
-              <Bars title="Rewards paid per day" data={series('rewards')} color="#ef4444" unit=" G$" />
-            </div>
-          </section>
-
-          <section className="flex flex-col gap-3">
-            <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">Weekly players</h2>
-            <div className="bg-valor-surface border border-valor-border rounded-xl overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead><tr className="text-slate-500 text-left"><th className="p-3">Week of</th><th className="p-3">Active</th><th className="p-3">New</th><th className="p-3">Back next week</th></tr></thead>
-                <tbody>
-                  {[...data.weekly].reverse().map((w) => (
-                    <tr key={w.weekStart} className="border-t border-valor-border text-slate-300">
-                      <td className="p-3">{w.weekStart}</td><td className="p-3">{n(w.active)}</td><td className="p-3">{n(w.newPlayers)}</td>
-                      <td className="p-3">{w.retainedNextWeek === null ? 'in progress' : `${n(w.retainedNextWeek)} (${Math.round((100 * w.retainedNextWeek) / Math.max(1, w.active))}%)`}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          {data.season && (
-            <section className="flex flex-col gap-3">
-              <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">
-                {data.season.name}, {data.season.start} to {data.season.end}{data.season.started ? '' : ' (starts soon)'}
-              </h2>
-              <div className="bg-valor-surface border border-valor-border rounded-xl p-4 flex flex-col gap-4">
-                {data.season.targets.map((x) => (
-                  <div key={x.id} className="flex flex-col gap-1.5">
-                    <div className="flex justify-between gap-2 text-xs">
-                      <span className="text-slate-300">{x.label}</span>
-                      <span className="text-slate-400">
-                        {x.actual === null ? <em>not on-chain</em> : n(x.actual, x.id === 'weeklyRetentionPct' ? 1 : 0)} / {n(x.target)}
-                        {x.pct !== null && <b className="text-white ml-2">{x.pct}%</b>}
-                      </span>
-                    </div>
-                    <div className="h-2 rounded-full bg-white/5 overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${Math.min(100, x.pct ?? 0)}%`, background: '#eab308' }} />
-                    </div>
-                    {x.kind !== 'offchain' && x.baseline !== null && x.kind === 'stock' && (
-                      <p className="text-[10px] text-slate-600">at season start: {n(x.baseline)}</p>
-                    )}
-                  </div>
-                ))}
-                <p className="text-[10px] text-slate-600">
-                  Players, active and retention are live totals. G$, revenue, txs and earners count from the season start. Groups and Face-Off stakes are not in the contract data.
+          {/* Hero numbers */}
+          <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {hero.map((h) => (
+              <div key={h.label} className="relative overflow-hidden rounded-xl border border-valor-border bg-linear-to-b from-[#16161f] to-[#0d0d14] p-4 pb-3 transition-colors hover:border-amber-500/40">
+                <p className="text-[9px] uppercase tracking-[0.2em] font-bold text-slate-500">{h.label}</p>
+                <p className="font-[family-name:var(--font-family-display)] font-black text-[28px] leading-none mt-2 tabular-nums bg-linear-to-b from-amber-100 via-amber-300 to-amber-500 bg-clip-text text-transparent">
+                  <CountUp value={h.value} format={(v) => compact(v, 1e5)} />
+                  {h.unit && <span className="ml-1.5 font-sans text-[11px] font-semibold text-slate-500">{h.unit}</span>}
                 </p>
+                <Spark values={h.sp} className="w-full h-9 mt-3 -mb-1" />
               </div>
-              <div className="bg-valor-surface border border-valor-border rounded-xl overflow-x-auto">
+            ))}
+          </section>
+
+          {/* Season */}
+          {data.season && (
+            <section className="flex flex-col gap-4">
+              <SectionTitle right={<Badge tone={data.season.started ? 'green' : 'gold'}>{data.season.started ? 'Live' : 'Awaiting launch'}</Badge>}>
+                {data.season.name} · {data.season.start} to {data.season.end}
+              </SectionTitle>
+              {(['stock', 'flow', 'offchain'] as const).map((kind) => {
+                const rows = data.season!.targets.filter((x) => x.kind === kind)
+                if (!rows.length) return null
+                const title = kind === 'stock' ? 'Live totals' : kind === 'flow' ? 'Counted from season start' : 'Tracked off-chain'
+                const note = kind === 'stock' ? 'The gold tick marks where the season started.' : kind === 'flow' ? 'Starts at zero on day one.' : 'Not visible in contract data.'
+                return (
+                  <div key={kind} className="flex flex-col gap-2.5">
+                    <p className="text-xs text-slate-300 font-bold">{title} <span className="font-normal text-slate-600">· {note}</span></p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                      {rows.map((x) => {
+                        const ret = x.id === 'weeklyRetentionPct'
+                        return (
+                          <Ring
+                            key={x.id}
+                            label={x.label}
+                            pct={x.pct}
+                            baselinePct={kind === 'stock' && x.baseline !== null && x.target ? (x.baseline / x.target) * 100 : null}
+                            detail={x.actual === null ? 'not on-chain' : `${n(x.actual, ret ? 1 : 0)}${ret ? '%' : ''} of ${compact(x.target, 1e4)}${ret ? '%' : ''}`}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+
+              <div className={`${PANEL} overflow-x-auto p-0 sm:p-0`}>
                 <table className="w-full text-xs">
-                  <thead><tr className="text-slate-500 text-left">
-                    <th className="p-3">Epoch</th><th className="p-3">Window</th><th className="p-3">Txs</th><th className="p-3">New</th><th className="p-3">Active</th><th className="p-3">G$ moved</th><th className="p-3">Spent</th><th className="p-3">Revenue</th><th className="p-3">Rewards</th>
-                  </tr></thead>
+                  <thead>
+                    <tr className="text-slate-500 text-left bg-white/[0.02]">
+                      {['Epoch', 'Window', 'Status', 'Txs', 'New', 'Active', 'G$ moved', 'Spent', 'Revenue', 'Rewards'].map((h, i) => (
+                        <th key={h} className={`px-3.5 py-2.5 font-bold uppercase tracking-wider text-[9px] ${i > 2 ? 'text-right' : ''}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
                   <tbody>
                     {data.season.epochs.map((e) => (
-                      <tr key={e.epoch} className="border-t border-valor-border text-slate-300">
-                        <td className="p-3">{e.epoch} <span className="text-slate-600">{e.status}</span></td>
-                        <td className="p-3 whitespace-nowrap">{e.start} to {e.end}</td>
-                        <td className="p-3">{n(e.txs)}</td><td className="p-3">{n(e.newPlayers)}</td><td className="p-3">{n(e.activePlayers)}</td>
-                        <td className="p-3">{n(e.gMoved)}</td><td className="p-3">{n(e.gSpent)}</td><td className="p-3">{n(e.revenue)}</td><td className="p-3">{n(e.rewards)}</td>
+                      <tr key={e.epoch} className="border-t border-valor-border text-slate-300 hover:bg-white/[0.02] transition-colors">
+                        <td className="px-3.5 py-3 font-[family-name:var(--font-family-display)] font-black text-white">{e.epoch}</td>
+                        <td className="px-3.5 py-3 whitespace-nowrap text-slate-400">{e.start} to {e.end}</td>
+                        <td className="px-3.5 py-3"><Badge tone={epochTone(e.status)}>{epochLabel(e.status)}</Badge></td>
+                        {[e.txs, e.newPlayers, e.activePlayers, e.gMoved, e.gSpent, e.revenue, e.rewards].map((v, i) => (
+                          <td key={i} className="px-3.5 py-3 text-right tabular-nums">{compact(v, 1e5)}</td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
@@ -264,12 +204,108 @@ export default function AdminAnalyticsPage() {
             </section>
           )}
 
-          <section className="flex flex-col gap-2">
-            <h2 className="text-[11px] uppercase tracking-widest text-slate-400 font-bold">How this is counted</h2>
-            <div className="bg-valor-surface border border-valor-border rounded-xl p-4 text-[11px] text-slate-400 flex flex-col gap-2">
-              {Object.entries(data.definitions).map(([k, v]) => <p key={k}><b className="text-slate-300">{k}:</b> {v}</p>)}
-              <p><b className="text-slate-300">excluded wallets:</b> {data.excludedWallets.map((w) => `${w.wallet.slice(0, 6)}…${w.wallet.slice(-4)} (${w.label})`).join('; ')}</p>
-              <p>Verified status is a live GoodDollar whitelist snapshot{data.totals.verifiedCheckedAt ? ` from ${new Date(String(data.totals.verifiedCheckedAt)).toLocaleDateString()}` : ''}; it can drop when GoodDollar un-whitelists a wallet.</p>
+          {/* Explorer */}
+          <section className="flex flex-col gap-4">
+            <SectionTitle>Daily explorer</SectionTitle>
+            <div className={PANEL}>
+              <Explorer days={data.days} />
+            </div>
+          </section>
+
+          {/* All time */}
+          <section className="flex flex-col gap-4">
+            <SectionTitle>All-time record</SectionTitle>
+            <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1">Players</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat label="Players" count={tot('players')} sub="characters claimed, same as Dune" />
+              <Stat label="Verified right now" count={tot('verifiedNow')} sub="lower bound, GoodDollar whitelists lapse" />
+              <Stat label="Active this month" count={tot('mau')} sub="players, last 30 days" />
+              <Stat label="Active this week" count={tot('wau')} sub="players, last 7 days" />
+              <Stat label="Weekly retention" value={data.latestRetentionPct === null ? 'n/a' : `${data.latestRetentionPct}%`} sub="last full week, players" />
+              <Stat label="Battles recorded" count={tot('battles')} />
+              <Stat label="Earners" count={tot('earners')} sub="wallets paid by a reward pool" />
+              <Stat label="Items on-chain" count={tot('itemsRegistered')} />
+            </div>
+            <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1 mt-2">Transactions and G$</p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <Stat label="On-chain txs" count={tot('txs')} sub={`${n(tot('txsLast30d'))} in 30d, ${n(tot('txsLast7d'))} in 7d`} />
+              <Stat label="G$ moved" count={tot('gMoved')} format={(v) => compact(v)} unit="G$" sub="in + out, team wallets excluded" />
+              <Stat label="G$ spent in app" count={tot('gSpentInApp')} format={(v) => compact(v)} unit="G$" sub="players into Valor contracts" />
+              <Stat label="Spent in marketplace" count={tot('gSpentMarketplace')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('marketplacePurchases'))} purchases`} />
+              <Stat label="Marketplace revenue" count={tot('marketplaceRevenue')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('marketplaceRevenueWithdrawn'))} withdrawn`} />
+              <Stat label="Rewards paid out" count={tot('rewardsPaid')} format={(v) => compact(v)} unit="G$" sub="from both reward pools" />
+            </div>
+          </section>
+
+          {/* Weekly */}
+          <section className="flex flex-col gap-3">
+            <SectionTitle>Weekly players</SectionTitle>
+            <div className={`${PANEL} overflow-auto max-h-[26rem] p-0 sm:p-0`}>
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 z-10 bg-[#13131c]">
+                  <tr className="text-slate-500 text-left bg-white/[0.02]">
+                    <th className="px-3.5 py-2.5 font-bold uppercase tracking-wider text-[9px]">Week of</th>
+                    <th className="px-3.5 py-2.5 font-bold uppercase tracking-wider text-[9px] text-right">Active</th>
+                    <th className="px-3.5 py-2.5 font-bold uppercase tracking-wider text-[9px] text-right">New</th>
+                    <th className="px-3.5 py-2.5 font-bold uppercase tracking-wider text-[9px]">Back next week</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...data.weekly].reverse().map((w) => {
+                    const pct = w.retainedNextWeek === null ? null : Math.round((100 * w.retainedNextWeek) / Math.max(1, w.active))
+                    return (
+                      <tr key={w.weekStart} className="border-t border-valor-border text-slate-300 hover:bg-white/[0.02] transition-colors">
+                        <td className="px-3.5 py-2.5 text-slate-400 whitespace-nowrap">{w.weekStart}</td>
+                        <td className="px-3.5 py-2.5 text-right tabular-nums">{n(w.active)}</td>
+                        <td className="px-3.5 py-2.5 text-right tabular-nums">{n(w.newPlayers)}</td>
+                        <td className="px-3.5 py-2.5">
+                          {pct === null ? (
+                            <span className="text-slate-600">in progress</span>
+                          ) : (
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-24 h-1.5 rounded-full bg-white/5 overflow-hidden"><div className="h-full rounded-full bg-linear-to-r from-amber-600 to-amber-300" style={{ width: `${Math.min(100, pct)}%` }} /></div>
+                              <span className="tabular-nums text-slate-400 whitespace-nowrap">{n(w.retainedNextWeek)} ({pct}%)</span>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {/* Method */}
+          <section className="flex flex-col gap-3">
+            <SectionTitle>How this is counted</SectionTitle>
+            <div className="flex flex-col gap-2">
+              {Object.entries(data.definitions).map(([k, v], i) => (
+                <details key={k} open={i === 0} className="group rounded-xl border border-valor-border bg-black/25 open:border-amber-500/30">
+                  <summary className="cursor-pointer list-none flex items-center justify-between px-4 py-3 text-sm font-bold text-slate-200 [&::-webkit-details-marker]:hidden">
+                    {DEF_NAMES[k] ?? k}
+                    <span className="text-amber-400 text-lg leading-none transition-transform group-open:rotate-45">+</span>
+                  </summary>
+                  <p className="px-4 pb-3.5 text-xs text-slate-400 leading-relaxed">{v}</p>
+                </details>
+              ))}
+              <details className="group rounded-xl border border-valor-border bg-black/25 open:border-amber-500/30">
+                <summary className="cursor-pointer list-none flex items-center justify-between px-4 py-3 text-sm font-bold text-slate-200 [&::-webkit-details-marker]:hidden">
+                  Excluded wallets
+                  <span className="text-amber-400 text-lg leading-none transition-transform group-open:rotate-45">+</span>
+                </summary>
+                <div className="px-4 pb-3.5 flex flex-col gap-1.5 text-xs">
+                  {data.excludedWallets.map((w) => (
+                    <p key={w.wallet} className="flex items-center gap-2 flex-wrap">
+                      <code className="px-1.5 py-0.5 rounded bg-black/40 border border-valor-border text-amber-300">{w.wallet.slice(0, 8)}…{w.wallet.slice(-6)}</code>
+                      <span className="text-slate-400">{w.label}</span>
+                    </p>
+                  ))}
+                </div>
+              </details>
+              <p className="text-[11px] text-slate-600 px-1">
+                Verified status is a live GoodDollar whitelist snapshot{checked ? ` from ${checked}` : ''}; it can drop when GoodDollar un-whitelists a wallet.
+              </p>
             </div>
           </section>
         </>
@@ -277,3 +313,4 @@ export default function AdminAnalyticsPage() {
     </div>
   )
 }
+
