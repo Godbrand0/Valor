@@ -209,6 +209,54 @@ pub async fn fund(req: HttpRequest, state: web::Data<AppState>, path: web::Path<
     }
 }
 
+/// ValorRewardPool.MAX_REWARD, the most one distributeReward can carry.
+const CHUNK_G: u64 = 10_000;
+
+fn season_chunk_ref(season_id: Uuid, wallet: &str, i: usize) -> [u8; 32] {
+    ethers::utils::keccak256(format!("season_payout:{}:{}:{}", season_id, wallet, i).as_bytes())
+}
+
+/// G$ of `amount` that has ALREADY landed on-chain for this winner. Chunks are sent in
+/// order, so the count stops at the first one whose reference is unused.
+async fn sent_g(chain: &crate::services::chain::ChainWriter, season_id: Uuid, wallet: &str, amount: u64) -> u64 {
+    let (mut left, mut sent, mut i) = (amount, 0u64, 0usize);
+    while left > 0 {
+        let take = left.min(CHUNK_G);
+        if chain.reward_ref_used(season_chunk_ref(season_id, wallet, i)).await.unwrap_or(false) {
+            sent += take;
+        } else {
+            break;
+        }
+        left -= take;
+        i += 1;
+    }
+    sent
+}
+
+/// The amount each UNPAID committed winner should receive under the season's CURRENT
+/// pool and split. Winners (who and which rank) freeze on the first payout run, but the
+/// money follows the split the admin has set, so changing it before the rest is paid
+/// takes effect. A row is left alone when it is already paid, when its prize has been
+/// delivered in full, or when the new amount is below what has already been sent (that
+/// would mean paying someone more than the new split, and money cannot be taken back).
+/// Returns (wallet, old_amount, new_amount, sent) per unpaid row.
+async fn resync_targets(
+    chain: Option<&crate::services::chain::ChainWriter>,
+    season: &SeasonMeta,
+    rows: &[(String, i32, i64, String)], // wallet, rank, amount, status
+) -> Vec<(String, i64, i64, u64)> {
+    let split = payout_split(season.prize_pool_g.max(0) as u64, rows.len(), season.payout_bps.as_deref());
+    let mut out = Vec::new();
+    for (wallet, rank, old, status) in rows {
+        if status == "paid" { continue; }
+        let sent = match chain { Some(c) => sent_g(c, season.id, wallet, (*old).max(0) as u64).await, None => 0 };
+        let target = split.get((*rank - 1).max(0) as usize).copied().unwrap_or(0) as i64;
+        let keep = sent >= (*old).max(0) as u64 || target < sent as i64 || target == 0;
+        out.push((wallet.clone(), *old, if keep { *old } else { target }, sent));
+    }
+    out
+}
+
 // ── GET /admin/seasons/:id/payout-preview ──────────────────────────────────────
 // Admin, READ-ONLY. Exactly who would be paid, how much, and whether the money and
 // gas are actually there — so the payout is a confirmation, not a leap of faith.
@@ -240,6 +288,12 @@ pub async fn payout_preview(req: HttpRequest, state: web::Data<AppState>, path: 
     )
     .bind(season_id).fetch_all(&state.db).await.unwrap_or_default();
 
+    // Unpaid committed rows are shown at the amount the payout will actually send: the
+    // current split, less what has already landed on-chain.
+    let rows_for_sync: Vec<(String, i32, i64, String)> =
+        committed.iter().map(|(w, _, r, _, a, st, _)| (w.clone(), *r, *a, st.clone())).collect();
+    let targets = resync_targets(state.chain.as_ref(), &season, &rows_for_sync).await;
+
     let winners: Vec<serde_json::Value> = if committed.is_empty() {
         let board = payout_board(&state.db, &season, PAYOUT_BPS.len() as i64).await;
         let split = payout_split(season.prize_pool_g.max(0) as u64, board.len(), season.payout_bps.as_deref());
@@ -255,16 +309,21 @@ pub async fn payout_preview(req: HttpRequest, state: web::Data<AppState>, path: 
             })
             .collect()
     } else {
-        committed.iter().map(|(w, u, r, waves, amt, st, tx)| json!({
-            "rank": r, "wallet_address": w, "username": u,
-            "waves": waves, "amount_g": amt, "status": st, "tx_hash": tx,
-        })).collect()
+        committed.iter().map(|(w, u, r, waves, amt, st, tx)| {
+            let t = targets.iter().find(|t| &t.0 == w);
+            json!({
+                "rank": r, "wallet_address": w, "username": u,
+                "waves": waves, "amount_g": t.map(|t| t.2).unwrap_or(*amt), "status": st, "tx_hash": tx,
+                "sent_g": t.map(|t| t.3).unwrap_or(0),
+            })
+        }).collect()
     };
 
     let total_g: i64 = winners.iter().filter_map(|w| w["amount_g"].as_i64()).sum();
+    // What is LEFT to send: unpaid prizes less the chunks that already landed.
     let unpaid_g: i64 = winners.iter()
         .filter(|w| w["status"].as_str() != Some("paid"))
-        .filter_map(|w| w["amount_g"].as_i64())
+        .map(|w| (w["amount_g"].as_i64().unwrap_or(0) - w["sent_g"].as_i64().unwrap_or(0)).max(0))
         .sum();
 
     // ValorRewardPool.MAX_REWARD caps one distributeReward at 10,000 G$, so each
@@ -273,11 +332,12 @@ pub async fn payout_preview(req: HttpRequest, state: web::Data<AppState>, path: 
     const MAX_CHUNK_G: i64 = 10_000;
     let tx_count: i64 = winners.iter()
         .filter(|w| w["status"].as_str() != Some("paid"))
-        .filter_map(|w| w["amount_g"].as_i64())
+        .map(|w| (w["amount_g"].as_i64().unwrap_or(0) - w["sent_g"].as_i64().unwrap_or(0)).max(0))
         .map(|a| (a + MAX_CHUNK_G - 1) / MAX_CHUNK_G)
         .sum();
 
     // Can it actually complete? Money and gas are the two ways this fails half-way.
+    let relay_address = state.chain.as_ref().map(|c| format!("{:?}", c.relay_address()));
     let (pool_balance_g, pool_address, relay_celo) = match state.chain.as_ref() {
         Some(chain) => {
             let addr = chain.reward_pool_address();
@@ -313,6 +373,7 @@ pub async fn payout_preview(req: HttpRequest, state: web::Data<AppState>, path: 
         // The two preconditions, pre-checked so the UI can say WHY it is blocked.
         "funded": pool_balance_g.map(|b| b >= unpaid_g).unwrap_or(false),
         "relay_celo": relay_celo,
+        "relay_address": relay_address,
         "can_pay": closed && pool_balance_g.map(|b| b >= unpaid_g).unwrap_or(false) && unpaid_g > 0,
     }))
 }
@@ -367,6 +428,22 @@ pub async fn payout(req: HttpRequest, state: web::Data<AppState>, path: web::Pat
             )
             .bind(season_id).bind(&e.wallet_address).bind((i + 1) as i32).bind(e.best).bind(amount as i64)
             .execute(&state.db).await;
+        }
+    }
+
+    // Winners are frozen, the money is not: bring every unpaid row to the season's
+    // current pool and split before sending (see resync_targets for what is left alone).
+    if already > 0 {
+        let all_rows: Vec<(String, i32, i64, String)> = sqlx::query_as(
+            "SELECT wallet_address, rank, amount_g, status FROM season_payouts WHERE season_id = $1 ORDER BY rank ASC",
+        )
+        .bind(season_id).fetch_all(&state.db).await.unwrap_or_default();
+        for (wallet, old, new, _sent) in resync_targets(Some(&chain), &season, &all_rows).await {
+            if new != old {
+                tracing::info!("season {} payout: {} amount {} -> {} G$ (split changed)", season.name, wallet, old, new);
+                let _ = sqlx::query("UPDATE season_payouts SET amount_g = $3 WHERE season_id = $1 AND wallet_address = $2 AND status <> 'paid'")
+                    .bind(season_id).bind(&wallet).bind(new).execute(&state.db).await;
+            }
         }
     }
 

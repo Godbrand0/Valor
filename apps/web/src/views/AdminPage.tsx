@@ -82,6 +82,8 @@ interface PayoutWinner {
   amount_g: number
   status: string
   tx_hash: string | null
+  /** G$ of this prize already delivered on-chain (a partly paid winner). */
+  sent_g?: number
 }
 interface PayoutPreview {
   season: { id: string; name: string; ends_at: string | null; prize_pool_g: number; payout_status: string; closed: boolean }
@@ -94,6 +96,7 @@ interface PayoutPreview {
   pool_balance_g: number | null
   funded: boolean
   relay_celo: number | null
+  relay_address?: string | null
   can_pay: boolean
 }
 
@@ -250,11 +253,11 @@ export default function AdminPage() {
   // at 70,000 G$, next 5 at 30,000 G$) since that's the one Marvy keeps reaching
   // for; tier 2 at 0 winners collapses to a flat top-N payout.
   const [fundTier1Count, setFundTier1Count] = useState(1)
-  const [fundTier1Each, setFundTier1Each] = useState(452500)
+  const [fundTier1Each, setFundTier1Each] = useState(400000)
   const [fundTier2Count, setFundTier2Count] = useState(1)
-  const [fundTier2Each, setFundTier2Each] = useState(264000)
+  const [fundTier2Each, setFundTier2Each] = useState(240000)
   const [fundTier3Count, setFundTier3Count] = useState(1)
-  const [fundTier3Each, setFundTier3Each] = useState(188500)
+  const [fundTier3Each, setFundTier3Each] = useState(190000)
   const [seasonFunding, setSeasonFunding] = useState(false)
 
   const [referralCampaigns, setReferralCampaigns] = useState<ReferralCampaign[]>([])
@@ -949,6 +952,9 @@ export default function AdminPage() {
                   </span>
                   <span className="text-slate-500 tabular-nums">{w.waves}w</span>
                   <span className="text-amber-300 font-bold tabular-nums">{w.amount_g.toLocaleString()} G$</span>
+                  {!!w.sent_g && w.status !== 'paid' && (
+                    <span className="text-emerald-400/80 text-[10px] tabular-nums">{w.sent_g.toLocaleString()} sent</span>
+                  )}
                   {w.status === 'paid'
                     ? <span className="text-emerald-400 text-[10px] font-bold w-12 text-right">PAID</span>
                     : w.status === 'failed'
@@ -960,7 +966,7 @@ export default function AdminPage() {
 
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 mb-2">
               <span>{preview.winner_count} winners</span>
-              <span className="text-slate-200 font-bold">{preview.unpaid_g.toLocaleString()} G$ to send</span>
+              <span className="text-slate-200 font-bold">{preview.unpaid_g.toLocaleString()} G$ left to send</span>
               <span>{preview.tx_count} transactions</span>
               {preview.pool_balance_g !== null && (
                 <span className={preview.funded ? 'text-emerald-400' : 'text-red-400'}>
@@ -982,8 +988,14 @@ export default function AdminPage() {
             )}
             {preview.season.closed && !preview.funded && preview.unpaid_g > 0 && (
               <p className="text-[11px] text-red-400 mb-2">
-                Reward pool holds less than the prizes. Top it up before paying, or the run stops part-way.
+                Reward pool holds {preview.pool_balance_g?.toLocaleString() ?? '?'} G$ but {preview.unpaid_g.toLocaleString()} G$ is still left to send. Top it up before paying, or the run stops part-way.
               </p>
+            )}
+            {(preview.pool_address || preview.relay_address) && (
+              <div className="text-[10px] text-slate-500 mb-2 break-all space-y-0.5">
+                {preview.pool_address && <p>Reward pool: <span className="text-slate-300 select-all">{preview.pool_address}</span></p>}
+                {preview.relay_address && <p>Relay (pays gas): <span className="text-slate-300 select-all">{preview.relay_address}</span></p>}
+              </div>
             )}
 
             <button
