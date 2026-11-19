@@ -226,7 +226,9 @@ export default function OnboardingPage() {
         magic_issuer:            magicIssuer ?? null,
         // Best-effort attribution. The server re-validates it and pays at most
         // once per new player, so a wrong or stale value costs nothing.
-        referred_by:             referrer || null,
+        // A code typed but not yet checked (they tapped Create without leaving the
+        // field) still counts: the server resolves ambassador codes itself.
+        referred_by:             referrer || inviterInput.trim().toLowerCase() || null,
       }
       const res = await fetch(`${API}/players`, {
         method: 'POST',
@@ -350,17 +352,25 @@ export default function OnboardingPage() {
                   </button>
                 </p>
               ) : (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={inviterInput}
-                    onChange={e => setInviterInput(e.target.value)}
-                    onBlur={() => void lookupInviter(inviterInput)}
-                    placeholder="who invited you? name or ambassador code (optional)"
-                    className="flex-1 bg-transparent border-b text-sm leading-none py-1 focus:outline-none placeholder:opacity-25 text-white"
-                    style={{ borderColor: 'rgba(255,255,255,0.15)' }}
-                  />
-                  {lookingUp && <span className="text-[10px] text-slate-500">checking…</span>}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                    Have an ambassador code or friend&apos;s name?
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={inviterInput}
+                      onChange={e => setInviterInput(e.target.value)}
+                      onBlur={() => void lookupInviter(inviterInput)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void lookupInviter(inviterInput) } }}
+                      placeholder="e.g. tobi-ui (optional)"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      className="flex-1 rounded-lg px-3 py-2 text-sm text-white focus:outline-none placeholder:text-slate-600"
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)' }}
+                    />
+                    {lookingUp && <span className="text-[10px] text-slate-500">checking…</span>}
+                  </div>
                 </div>
               )}
             </div>
