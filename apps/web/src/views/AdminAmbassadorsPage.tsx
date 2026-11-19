@@ -26,6 +26,8 @@ export default function AdminAmbassadorsPage() {
   const [location, setLocation] = useState('')
   const [username, setUsername] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
+  const [matches, setMatches] = useState<{ username: string; wallet_address: string }[]>([])
+  const [picked, setPicked] = useState(false)
 
   useEffect(() => { setToken(loadToken()); setReady(true) }, [])
 
@@ -43,6 +45,25 @@ export default function AdminAmbassadorsPage() {
 
   useEffect(() => { if (token) void load() }, [token, load])
 
+  // Suggest real players as the username is typed, so a typo can never be submitted.
+  useEffect(() => {
+    const q = username.trim()
+    if (picked || q.length < 2) { setMatches([]); return }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API}/players/search?q=${encodeURIComponent(q)}`)
+        const rows = res.ok ? await res.json() : []
+        setMatches((rows as { username: string | null; wallet_address: string }[]).filter((r): r is { username: string; wallet_address: string } => !!r.username))
+      } catch { setMatches([]) }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [username, picked])
+
+  function pick(m: { username: string }) {
+    setUsername(m.username); setPicked(true); setMatches([])
+    setName((n) => n || m.username)
+  }
+
   async function create() {
     setMsg(null)
     const res = await authed('/admin/ambassadors', {
@@ -50,7 +71,7 @@ export default function AdminAmbassadorsPage() {
       body: JSON.stringify({ code: code.trim().toLowerCase(), name: name.trim(), location: location.trim(), username: username.trim() }),
     })
     const j = await res.json().catch(() => ({}))
-    if (res.ok) { setCode(''); setName(''); setLocation(''); setUsername(''); setMsg('Ambassador added.'); await load() }
+    if (res.ok) { setCode(''); setName(''); setLocation(''); setUsername(''); setPicked(false); setMsg('Ambassador added.'); await load() }
     else setMsg((j as { error?: string }).error ?? 'Could not add ambassador')
   }
 
@@ -130,15 +151,31 @@ export default function AdminAmbassadorsPage() {
             <SectionTitle>Add an ambassador</SectionTitle>
             <div className={`${PANEL} flex flex-col gap-3`}>
               <p className="text-slate-500 text-xs">They must already have a Valor account and be verified. Use their in-game username.</p>
-              <label className="flex flex-col gap-1.5"><span className={LABEL}>Player username</span>
-                <input value={username} onChange={(e) => setUsername(e.target.value)} className={INPUT} placeholder="Metacourier1" /></label>
+              <div className="relative flex flex-col gap-1.5">
+                <span className={LABEL}>Player username</span>
+                <input value={username} onChange={(e) => { setUsername(e.target.value); setPicked(false) }} className={INPUT} placeholder="Start typing a username" autoComplete="off" />
+                {matches.length > 0 && (
+                  <ul className="absolute left-0 right-0 top-full mt-1 z-10 rounded-xl border border-valor-border bg-[#0b0b10] overflow-hidden shadow-xl">
+                    {matches.map((m) => (
+                      <li key={m.wallet_address}>
+                        <button type="button" onClick={() => pick(m)} className="w-full text-left px-4 py-2.5 text-sm text-white hover:bg-amber-500/10 flex items-center justify-between gap-3">
+                          <span className="font-semibold">{m.username}</span>
+                          <span className="text-[10px] font-mono text-slate-500">{m.wallet_address.slice(0, 6)}…{m.wallet_address.slice(-4)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {!picked && username.trim().length >= 2 && matches.length === 0 && <p className="text-[11px] text-red-400">No player found with that name.</p>}
+                {picked && <p className="text-[11px] text-emerald-400">Player found.</p>}
+              </div>
               <label className="flex flex-col gap-1.5"><span className={LABEL}>Display name</span>
-                <input value={name} onChange={(e) => setName(e.target.value)} className={INPUT} placeholder="Tobi" /></label>
+                <input value={name} onChange={(e) => setName(e.target.value)} className={INPUT} placeholder="Shown on signup as Invited by …" /></label>
               <label className="flex flex-col gap-1.5"><span className={LABEL}>School or location</span>
                 <input value={location} onChange={(e) => setLocation(e.target.value)} className={INPUT} placeholder="UI Ibadan" /></label>
               <label className="flex flex-col gap-1.5"><span className={LABEL}>Code (said out loud, 3-24 letters, digits, dashes)</span>
                 <input value={code} onChange={(e) => setCode(e.target.value)} className={INPUT} placeholder="tobi-ui" /></label>
-              <button onClick={() => void create()} disabled={!code || !name || !username} className={`${BTN_GOLD} disabled:opacity-40`}>Add ambassador</button>
+              <button onClick={() => void create()} disabled={!code || !name || !picked} className={`${BTN_GOLD} disabled:opacity-40`}>Add ambassador</button>
             </div>
           </section>
 
