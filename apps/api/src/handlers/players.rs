@@ -427,7 +427,9 @@ const REFERRAL_DAILY_CAP: i64 = 50;
 /// Every guard is here rather than on the client: the client supplies the
 /// referrer and cannot be trusted with who gets credited.
 async fn credit_referral(state: &AppState, referred: &str, referrer_raw: &str) {
-    let referrer = normalize_wallet(referrer_raw);
+    // An ambassador code stands in for the ambassador's wallet.
+    let resolved = crate::handlers::ambassadors::resolve_code(&state.db, referrer_raw).await;
+    let referrer = normalize_wallet(resolved.as_deref().unwrap_or(referrer_raw));
     if !is_valid_wallet(&referrer) || referrer == referred {
         return;
     }
@@ -494,7 +496,10 @@ async fn credit_referral(state: &AppState, referred: &str, referrer_raw: &str) {
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
-    if recent >= REFERRAL_DAILY_CAP {
+    // Ambassadors work events and classrooms, where dozens sign up in a day. The
+    // verified-wallet gate above still applies to every one of them.
+    let is_ambassador = crate::handlers::ambassadors::is_ambassador(&state.db, &referrer).await;
+    if recent >= REFERRAL_DAILY_CAP && !is_ambassador {
         tracing::warn!(
             "referral capped: {} already credited {} referrals in the last 24h (cap {}), skipping {}",
             referrer, recent, REFERRAL_DAILY_CAP, referred,

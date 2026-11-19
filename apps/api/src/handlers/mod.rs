@@ -25,6 +25,7 @@ pub mod admin;
 pub mod consistency;
 pub mod client_errors;
 pub mod push;
+pub mod ambassadors;
 pub mod campaigns;
 pub mod groups;
 
@@ -209,6 +210,9 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route("/seasons/{id}/payout", web::post().to(seasons::payout))
                 .route("/referrals/retry", web::post().to(players::retry_referrals))
                 .route("/character-claims/retry", web::post().to(players::retry_character_claims))
+                .route("/ambassadors", web::get().to(ambassadors::admin_list))
+                .route("/ambassadors", web::post().to(ambassadors::admin_create))
+                .route("/ambassadors/{code}/active", web::post().to(ambassadors::admin_set_active))
                 .route("/campaigns/referrals", web::get().to(campaigns::list))
                 .route("/campaigns/referrals", web::post().to(campaigns::create))
                 .route("/campaigns/referrals/{id}/fund", web::post().to(campaigns::fund))
@@ -226,6 +230,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::scope("/campaigns")
                 .route("/referrals/current", web::get().to(campaigns::current)),
+        )
+        .service(
+            web::scope("/ambassadors")
+                .route("/{code}", web::get().to(ambassadors::get_public)),
         )
         .service(
             web::scope("/groups")

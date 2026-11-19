@@ -20,12 +20,14 @@ import { NextResponse, type NextRequest } from 'next/server'
  */
 export const REFERRAL_COOKIE = 'valor_ref'
 
-const WALLET = /^0x[a-fA-F0-9]{40}$/
+const WALLET = /^(0x[a-fA-F0-9]{40}|[a-zA-Z0-9-]{3,24})$/
 const NINETY_DAYS = 60 * 60 * 24 * 90
 
 export function middleware(req: NextRequest) {
-  const ref = req.nextUrl.searchParams.get('ref')
-  const res = NextResponse.next()
+  // Ambassador short link: /a/<code> sets the cookie, then lands on the home page.
+  const short = req.nextUrl.pathname.match(/^\/a\/([a-zA-Z0-9-]{3,24})\/?$/)
+  const ref = short ? short[1] : req.nextUrl.searchParams.get('ref')
+  const res = short ? NextResponse.redirect(new URL('/', req.url)) : NextResponse.next()
 
   if (!ref || !WALLET.test(ref)) return res
 

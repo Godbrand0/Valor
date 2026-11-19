@@ -20,7 +20,9 @@
  */
 
 const KEY = 'valor_ref'
-const WALLET = /^0x[a-fA-F0-9]{40}$/
+// A referrer is a wallet, or an ambassador code (3-24 of a-z, 0-9, dash). The server
+// resolves codes and re-validates everything.
+const WALLET = /^(0x[a-fA-F0-9]{40}|[a-zA-Z0-9-]{3,24})$/
 
 function fromCookie(): string | null {
   if (typeof document === 'undefined') return null

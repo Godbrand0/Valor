@@ -11,6 +11,7 @@ const TABS = [
   { href: '/admin', label: 'Season ops', match: (p: string) => p === '/admin' },
   { href: '/admin/analytics', label: 'Analytics', match: (p: string) => p.startsWith('/admin/analytics') },
   { href: '/admin/groups', label: 'Groups', match: (p: string) => p.startsWith('/admin/groups') },
+  { href: '/admin/ambassadors', label: 'Ambassadors', match: (p: string) => p.startsWith('/admin/ambassadors') },
 ]
 
 export default function AdminNav() {

@@ -9,6 +9,7 @@ import { CountUp, PILL, PILL_ON, compact } from './ui'
 export interface DayPoint {
   date: string; txs: number; newPlayers: number; activePlayers: number
   gMoved: number; gSpent: number; marketplaceSpend: number; rewards: number
+  revenue?: number
 }
 
 /* ── smooth line through points (monotone cubic, never overshoots) ───────── */
@@ -108,6 +109,7 @@ const METRICS: { key: keyof Omit<DayPoint, 'date'>; label: string; unit: string 
   { key: 'gMoved', label: 'G$ moved', unit: ' G$' },
   { key: 'gSpent', label: 'G$ spent in app', unit: ' G$' },
   { key: 'marketplaceSpend', label: 'Marketplace', unit: ' G$' },
+  { key: 'revenue', label: 'Revenue to Valor', unit: ' G$' },
   { key: 'rewards', label: 'Rewards paid', unit: ' G$' },
 ]
 const fmtDate = (s: string, o: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }) =>

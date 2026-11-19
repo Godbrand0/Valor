@@ -68,9 +68,10 @@ export default function OnboardingPage() {
     const found = getReferrer()
     if (!found) return
     setReferrer(found)
-    fetch(`${process.env.NEXT_PUBLIC_API_URL}/players/${found}`)
+    const isCode = !found.startsWith('0x')
+    fetch(`${process.env.NEXT_PUBLIC_API_URL}/${isCode ? 'ambassadors' : 'players'}/${found}`)
       .then(r => (r.ok ? r.json() : null))
-      .then(p => { if (p) setReferrerName(p.username || p.character_name) })
+      .then(p => { if (p) setReferrerName(isCode ? p.name : (p.username || p.character_name)) })
       .catch(() => {})
   }, [])
 
@@ -80,6 +81,14 @@ export default function OnboardingPage() {
     if (!name) return
     setLookingUp(true)
     try {
+      // An ambassador code typed in person ("sign up with code TOBI-UI").
+      const amb = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ambassadors/${encodeURIComponent(name.toLowerCase())}`)
+      if (amb.ok) {
+        const a = await amb.json()
+        setReferrer(a.code)
+        setReferrerName(a.name)
+        return
+      }
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/players/search?q=${encodeURIComponent(name)}&exclude=${address}`,
       )
@@ -347,7 +356,7 @@ export default function OnboardingPage() {
                     value={inviterInput}
                     onChange={e => setInviterInput(e.target.value)}
                     onBlur={() => void lookupInviter(inviterInput)}
-                    placeholder="who invited you? (optional)"
+                    placeholder="who invited you? name or ambassador code (optional)"
                     className="flex-1 bg-transparent border-b text-sm leading-none py-1 focus:outline-none placeholder:opacity-25 text-white"
                     style={{ borderColor: 'rgba(255,255,255,0.15)' }}
                   />

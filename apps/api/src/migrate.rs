@@ -68,6 +68,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     // below.
     ("add_referral_campaign_payouts.sql", include_str!("../migrations/add_referral_campaign_payouts.sql")),
     ("add_player_groups.sql",    include_str!("../migrations/add_player_groups.sql")),
+    ("add_ambassadors.sql",      include_str!("../migrations/add_ambassadors.sql")),
     // Needs player_groups (FK), so it must come after add_player_groups.sql.
     ("add_season_payout_group.sql", include_str!("../migrations/add_season_payout_group.sql")),
     ("add_repeating_decay.sql",   include_str!("../migrations/add_repeating_decay.sql")),
