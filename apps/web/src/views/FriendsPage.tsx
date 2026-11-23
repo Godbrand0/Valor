@@ -432,63 +432,58 @@ export default function FriendsPage() {
                     </div>
                   </>
                 ) : (
-                  <>
-                    {/* Name + chat on their own line — on a narrow phone, cramming
-                        the challenge/remove icons onto this same line left ~80px
-                        for the name and rank badge, so names truncated to 2-3
-                        letters and the badge rendered half-hidden under the Chat
-                        button. Splitting the row gives both lines room to breathe. */}
-                    <div className="flex items-center gap-3">
-                      <RankAura rank={f.rank as Rank} mode="badge"><FriendAvatar wallet={f.wallet} name={who(f)} /></RankAura>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white font-bold text-sm truncate">{who(f)}</p>
-                        <div className="mt-1 overflow-hidden"><RankBadge rank={f.rank as Rank} /></div>
-                      </div>
+                  <div className="flex items-center gap-2">
+                    <RankAura rank={f.rank as Rank} mode="badge"><FriendAvatar wallet={f.wallet} name={who(f)} /></RankAura>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white font-bold text-sm truncate">{who(f)}</p>
+                      {/* overflow-hidden — without it a rank name wider than this
+                          narrow column (e.g. "PLATINUM") bled out past its box and
+                          rendered half-hidden under the Chat button instead of
+                          clipping cleanly. */}
+                      <div className="mt-1 overflow-hidden"><RankBadge rank={f.rank as Rank} /></div>
+                    </div>
+                    <button
+                      onClick={() => router.push(`/friends/chat/${f.wallet}?name=${encodeURIComponent(who(f))}`)}
+                      className="relative shrink-0 px-3 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors flex items-center gap-1.5"
+                    >
+                      <MessageCircle size={14} /> Chat
+                      {!!unreadByWallet[f.wallet] && (
+                        <span className="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-black flex items-center justify-center">
+                          {unreadByWallet[f.wallet]}
+                        </span>
+                      )}
+                    </button>
+                    {/* Live Face-Off challenge — FaceOffPage already reads ?challenge/&name
+                        to aim a new challenge at one player, it just had no way in. Grouped
+                        with the duel challenge since both are "fight this friend" actions. */}
+                    <div className="flex items-center rounded-lg border border-valor-border overflow-hidden">
                       <button
-                        onClick={() => router.push(`/friends/chat/${f.wallet}?name=${encodeURIComponent(who(f))}`)}
-                        className="relative shrink-0 px-3 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors flex items-center gap-1.5"
+                        onClick={() => router.push(`/faceoff?challenge=${f.wallet}&name=${encodeURIComponent(who(f))}`)}
+                        className="w-9 h-10 text-orange-300 hover:text-orange-200 hover:bg-orange-500/10 transition-colors flex items-center justify-center"
+                        aria-label={`Face-Off ${who(f)}`}
+                        title="Challenge to a live Face-Off"
                       >
-                        <MessageCircle size={14} /> Chat
-                        {!!unreadByWallet[f.wallet] && (
-                          <span className="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-black flex items-center justify-center">
-                            {unreadByWallet[f.wallet]}
-                          </span>
-                        )}
+                        <Flame size={16} />
+                      </button>
+                      <div className="w-px self-stretch bg-valor-border" />
+                      <button
+                        onClick={() => router.push(`/duels?challenge=${f.wallet}&name=${encodeURIComponent(who(f))}`)}
+                        className="w-9 h-10 text-slate-300 hover:text-white hover:bg-valor-gold/10 transition-colors flex items-center justify-center"
+                        aria-label={`Challenge ${who(f)}`}
+                        title="Challenge to a Duel"
+                      >
+                        <Swords size={16} />
                       </button>
                     </div>
-                    <div className="flex items-center justify-end gap-1.5">
-                      {/* Live Face-Off challenge — FaceOffPage already reads ?challenge/&name
-                          to aim a new challenge at one player, it just had no way in. Grouped
-                          with the duel challenge since both are "fight this friend" actions. */}
-                      <div className="flex items-center rounded-lg border border-valor-border overflow-hidden">
-                        <button
-                          onClick={() => router.push(`/faceoff?challenge=${f.wallet}&name=${encodeURIComponent(who(f))}`)}
-                          className="w-10 h-10 text-orange-300 hover:text-orange-200 hover:bg-orange-500/10 transition-colors flex items-center justify-center"
-                          aria-label={`Face-Off ${who(f)}`}
-                          title="Challenge to a live Face-Off"
-                        >
-                          <Flame size={16} />
-                        </button>
-                        <div className="w-px self-stretch bg-valor-border" />
-                        <button
-                          onClick={() => router.push(`/duels?challenge=${f.wallet}&name=${encodeURIComponent(who(f))}`)}
-                          className="w-10 h-10 text-slate-300 hover:text-white hover:bg-valor-gold/10 transition-colors flex items-center justify-center"
-                          aria-label={`Challenge ${who(f)}`}
-                          title="Challenge to a Duel"
-                        >
-                          <Swords size={16} />
-                        </button>
-                      </div>
-                      <button
-                        onClick={() => setConfirmRemove(f.wallet)}
-                        className="shrink-0 w-10 h-10 rounded-lg border border-valor-border text-slate-400 hover:text-red-300 hover:border-red-500/50 transition-colors flex items-center justify-center"
-                        aria-label={`Remove ${who(f)}`}
-                        title="Remove friend"
-                      >
-                        <UserMinus size={16} />
-                      </button>
-                    </div>
-                  </>
+                    <button
+                      onClick={() => setConfirmRemove(f.wallet)}
+                      className="shrink-0 w-9 h-10 rounded-lg border border-valor-border text-slate-400 hover:text-red-300 hover:border-red-500/50 transition-colors flex items-center justify-center"
+                      aria-label={`Remove ${who(f)}`}
+                      title="Remove friend"
+                    >
+                      <UserMinus size={16} />
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
