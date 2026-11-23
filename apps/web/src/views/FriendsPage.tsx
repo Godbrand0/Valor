@@ -432,13 +432,18 @@ export default function FriendsPage() {
                     </div>
                   </>
                 ) : (
-                  <div className="flex items-center gap-3">
-                    <RankAura rank={f.rank as Rank} mode="badge"><FriendAvatar wallet={f.wallet} name={who(f)} /></RankAura>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white font-bold text-sm truncate">{who(f)}</p>
-                      <div className="mt-1"><RankBadge rank={f.rank as Rank} /></div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
+                  <>
+                    {/* Name + chat on their own line — on a narrow phone, cramming
+                        the challenge/remove icons onto this same line left ~80px
+                        for the name and rank badge, so names truncated to 2-3
+                        letters and the badge rendered half-hidden under the Chat
+                        button. Splitting the row gives both lines room to breathe. */}
+                    <div className="flex items-center gap-3">
+                      <RankAura rank={f.rank as Rank} mode="badge"><FriendAvatar wallet={f.wallet} name={who(f)} /></RankAura>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white font-bold text-sm truncate">{who(f)}</p>
+                        <div className="mt-1 overflow-hidden"><RankBadge rank={f.rank as Rank} /></div>
+                      </div>
                       <button
                         onClick={() => router.push(`/friends/chat/${f.wallet}?name=${encodeURIComponent(who(f))}`)}
                         className="relative shrink-0 px-3 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors flex items-center gap-1.5"
@@ -450,6 +455,8 @@ export default function FriendsPage() {
                           </span>
                         )}
                       </button>
+                    </div>
+                    <div className="flex items-center justify-end gap-1.5">
                       {/* Live Face-Off challenge — FaceOffPage already reads ?challenge/&name
                           to aim a new challenge at one player, it just had no way in. Grouped
                           with the duel challenge since both are "fight this friend" actions. */}
@@ -481,7 +488,7 @@ export default function FriendsPage() {
                         <UserMinus size={16} />
                       </button>
                     </div>
-                  </div>
+                  </>
                 )}
               </div>
             ))}
