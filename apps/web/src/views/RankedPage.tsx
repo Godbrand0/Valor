@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { usePlayerStore } from '@/stores/usePlayerStore'
-import ChallengeBattle from '@/components/battle/ChallengeBattle'
+import ChallengePlayer from '@/components/battle/ChallengePlayer'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 import Redirect from '@/components/ui/Redirect'
 
@@ -11,7 +11,8 @@ import Redirect from '@/components/ui/Redirect'
  * Ranked (async) PvP — the interim competitive loop while real-time PvP is built
  * (see docs/PVP_NETCODE.md). Challenge any warrior by wallet/name; the server
  * resolves the fight from both loadouts and awards XP to both. Decoupled from the
- * retired turn-based "Classic" page; reuses the existing ChallengeBattle flow.
+ * retired turn-based "Classic" page. Now the same real challenge flow as the Fight
+ * page (ChallengePlayer): a live Face-Off or an async Duel, free or staked.
  */
 export default function RankedPage() {
   const { status, address } = useResolvedAuth()
@@ -28,7 +29,7 @@ export default function RankedPage() {
 
   return (
     <div className="max-w-2xl mx-auto">
-      <ChallengeBattle
+      <ChallengePlayer
         walletAddress={address}
         onBack={() => router.push('/')}
         prefillOpponent={challengeTarget}

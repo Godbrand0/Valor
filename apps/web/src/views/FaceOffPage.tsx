@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Crosshair, Coins, Loader2, X, AlertTriangle } from 'lucide-react'
+import { Crosshair, Coins, Loader2, X, AlertTriangle, Zap } from 'lucide-react'
 import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
-import { useActiveWalletClientError } from '@/hooks/useActiveWalletClient'
-import { useDuels, type DuelRun } from '@/hooks/useDuels'
+import { useActiveWalletClient, useActiveWalletClientError } from '@/hooks/useActiveWalletClient'
+import { ensurePlayerSession } from '@/lib/playerAuth'
+import { useDuels, isFree, FREE_STAKE, type DuelRun, type MyDuel } from '@/hooks/useDuels'
 import { useArenaSocket, type HitEvent } from '@/hooks/useArenaSocket'
 import { useFaceOffRating } from '@/hooks/useFaceOffRating'
 import { retryImport } from '@/lib/retryImport'
@@ -68,15 +69,21 @@ export default function FaceOffPage() {
   const playerSynced = usePlayerStore((s) => s.playerSynced)
   const inventory = usePlayerStore((s) => s.inventory)
   const equippedGun = useMemo(() => equippedGunId(inventory), [inventory])
-  const { duels, loading, pending, signerReady, createDuel, acceptDuel, cancelDuel } = useDuels(address)
+  const { duels, loading, pending, signerReady, freeAllowed, createDuel, acceptDuel, quickMatch, cancelDuel } = useDuels(address)
+  const walletClient = useActiveWalletClient()
   const walletClientError = useActiveWalletClientError()
   const arena = useArenaSocket(address ?? '')
   const { data: rating } = useFaceOffRating(address)
 
   const challengeWallet = searchParams.get('challenge')
   const challengeName = searchParams.get('name')
+  // Straight into one duel — what challenge / accept / ready-check notifications link to.
+  const linkedDuel = searchParams.get('duel')
+  // Pre-picked stake from the unified challenge sheet ("0" = free).
+  const linkedStake = searchParams.get('stake')
 
-  const [stakeChoice, setStakeChoice] = useState(1000)
+  const [stakeChoice, setStakeChoice] = useState(linkedStake !== null && Number.isFinite(Number(linkedStake)) ? Number(linkedStake) : 1000)
+  const [searching, setSearching] = useState(false)
   const [confirm, setConfirm] = useState<{ mode: 'create' | 'accept'; stake: number; id?: string; invitedWallet?: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [activeDuel, setActiveDuel] = useState<DuelRun | null>(null)
@@ -105,12 +112,39 @@ export default function FaceOffPage() {
     return () => clearInterval(id)
   }, [arena.state.phase])
 
-  const enterArena = useCallback(() => {
-    if (!activeDuel) return
+  const enterArena = useCallback(async () => {
+    if (!activeDuel || !address) return
     setPickingLoadout(false)
+    // The arena only seats a player who proves the wallet is theirs (session
+    // token in the join message), so make sure a session exists first.
+    const session = await ensurePlayerSession(address, walletClient)
+    if (!session) {
+      setError('Sign in with your wallet to enter the arena, then tap Join.')
+      return
+    }
     arena.connect(activeDuel.id)
     setConnected(true)
-  }, [activeDuel, arena])
+  }, [activeDuel, address, walletClient, arena])
+
+  /** Back into one of our own accepted Face-Offs — after leaving the page, or
+   *  from a notification. Before this, an accepted duel only offered "Watch". */
+  const resumeDuel = useCallback((d: Pick<MyDuel, 'id' | 'stake_g'>) => {
+    setError(null)
+    setActiveDuel({ id: d.id, mode: 'face_off', stake_g: d.stake_g, seed: 0, run_token: '', winner_takes_g: 0 })
+    setPickingLoadout(true)
+  }, [])
+
+  /** Quick Match: join someone waiting at this stake, or wait in the arena to be found. */
+  const onQuickMatch = useCallback(async (stakeG: number) => {
+    setError(null)
+    setSearching(true)
+    try {
+      const { run } = await quickMatch(stakeG)
+      setActiveDuel(run)
+      setPickingLoadout(true)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not find a match') }
+    finally { setSearching(false) }
+  }, [quickMatch])
 
   // Face-Off duels only — wave_race rows share the same table/list but have
   // nothing to do with this page.
@@ -118,6 +152,23 @@ export default function FaceOffPage() {
   const openFaceOff = useMemo(() => duels?.open.filter((d) => d.mode === 'face_off') ?? [], [duels])
   const invitedFaceOff = useMemo(() => duels?.invited.filter((d) => d.mode === 'face_off') ?? [], [duels])
   const myOpen = myFaceOff.find((d) => d.status === 'open' && d.challenger.toLowerCase() === address?.toLowerCase())
+
+  // ?duel=<id>: open that duel in whatever state it's in — join our accepted
+  // match, wait on our open one, or review a challenge sent to us. Once.
+  const handledLink = useRef(false)
+  useEffect(() => {
+    if (!linkedDuel || handledLink.current || !duels || activeDuel) return
+    handledLink.current = true
+    const mine = myFaceOff.find((d) => d.id === linkedDuel)
+    if (mine?.status === 'accepted') { resumeDuel(mine); return }
+    if (mine?.status === 'open') {
+      setActiveDuel({ id: mine.id, mode: 'face_off', stake_g: mine.stake_g, seed: 0, run_token: '', winner_takes_g: 0 })
+      return
+    }
+    const invite = invitedFaceOff.find((d) => d.id === linkedDuel) ?? openFaceOff.find((d) => d.id === linkedDuel)
+    if (invite) { setConfirm({ mode: 'accept', stake: invite.stake_g, id: invite.id }); return }
+    if (mine?.status === 'resolved' || mine?.status === 'cancelled') setError('That Face-Off is already over.')
+  }, [linkedDuel, duels, activeDuel, myFaceOff, invitedFaceOff, openFaceOff, resumeDuel])
 
   // A challenger who created the duel has to wait for someone else to accept
   // it — that shows up here as their row's status flipping to 'accepted' on
@@ -191,12 +242,12 @@ export default function FaceOffPage() {
     return (
       <LoadoutModal
         opName="Face-Off"
-        label={`Loadout · ${activeDuel.stake_g.toLocaleString()} G$ staked`}
+        label={isFree(activeDuel.stake_g) ? 'Loadout · Free match' : `Loadout · ${activeDuel.stake_g.toLocaleString()} G$ staked`}
         cta="ENTER THE ARENA"
         walletAddress={address}
         weaponOnly
-        onClose={enterArena}
-        onDeploy={enterArena}
+        onClose={() => { void enterArena() }}
+        onDeploy={() => { void enterArena() }}
       />
     )
   }
@@ -225,7 +276,13 @@ export default function FaceOffPage() {
           phase={arena.state.phase}
           pause={arena.state.pause}
           countdown={arena.state.countdown}
-          opponentName={opponent ? who(null, opponent.wallet) : '…'}
+          opponentName={opponent ? who(null, opponent.wallet) : 'an opponent'}
+          onStopWaiting={myOpen ? () => {
+            // Still nobody — take our open duel down (refunds a stake) and leave.
+            const id = myOpen.id
+            backToLobby()
+            void cancelDuel(id).catch(() => {})
+          } : undefined}
           localHp={localHp} opponentHp={opponentHp}
           ammo={ammo} reloading={reloading}
           hitmarker={hitmarker}
@@ -299,7 +356,12 @@ export default function FaceOffPage() {
   const payoutFor = (s: number) => Math.floor((s * 2 * (10_000 - cutBps)) / 10_000)
   const poolCut = (s: number) => s * 2 - payoutFor(s)
   const currency = 'G$'
-  const activeStake = tiers.includes(stakeChoice) ? stakeChoice : (tiers[Math.floor(tiers.length / 2)] ?? stakeChoice)
+  // "Free" first when the API supports it — the easy way in for new players and friends.
+  const choices = freeAllowed ? [FREE_STAKE, ...tiers] : tiers
+  const activeStake = choices.includes(stakeChoice) ? stakeChoice : (tiers[Math.floor(tiers.length / 2)] ?? stakeChoice)
+  const stakeLabel = (s: number) => (isFree(s) ? 'Free' : `${s.toLocaleString()} ${currency}`)
+  // A free match needs no stake signature, so a wallet that can't sign right now doesn't block it.
+  const canStart = (s: number) => !pending && !searching && (isFree(s) || signerReady)
 
   // Waiting on an opponent to accept our own open challenge.
   if (activeDuel && myOpen) {
@@ -308,14 +370,14 @@ export default function FaceOffPage() {
         <Loader2 className="animate-spin text-valor-gold" size={28} />
         <p className="font-display font-black text-white text-lg">Waiting for an opponent</p>
         <p className="text-slate-400 text-sm max-w-xs">
-          {myOpen.stake_g.toLocaleString()} {currency} staked. You&apos;ll drop straight into the arena the moment someone accepts.
+          {isFree(myOpen.stake_g) ? 'Free match.' : `${myOpen.stake_g.toLocaleString()} ${currency} staked.`} You&apos;ll drop straight into the arena the moment someone accepts.
         </p>
         <button
           onClick={() => { setError(null); void cancelDuel(myOpen.id).then(() => setActiveDuel(null)).catch((e) => setError(e.message)) }}
           disabled={pending}
           className="mt-2 text-xs text-slate-500 hover:text-red-300 transition-colors"
         >
-          {pending ? 'Closing…' : 'Cancel & refund my stake'}
+          {pending ? 'Closing…' : isFree(myOpen.stake_g) ? 'Cancel challenge' : 'Cancel & refund my stake'}
         </button>
         {error && <p className="text-red-400 text-xs">{error}</p>}
       </div>
@@ -388,7 +450,7 @@ export default function FaceOffPage() {
               {challengeWallet ? 'Only they can accept this stake' : 'Choose your stake'}
             </p>
             <div className="grid grid-cols-3 gap-2">
-              {tiers.map((t) => (
+              {choices.map((t) => (
                 <button
                   key={t}
                   onClick={() => setStakeChoice(t)}
@@ -399,21 +461,67 @@ export default function FaceOffPage() {
                       : 'border-valor-border bg-valor-surface-2 text-slate-300 hover:border-valor-gold/50'
                   }`}
                 >
-                  {t.toLocaleString()}
+                  {isFree(t) ? 'Free' : t.toLocaleString()}
                 </button>
               ))}
             </div>
+            {!challengeWallet && (
+              <button
+                onClick={() => void onQuickMatch(activeStake)}
+                disabled={!canStart(activeStake)}
+                className="w-full min-h-12 rounded-xl bg-red-500 text-white font-bold text-sm hover:bg-red-400 transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {searching ? <><Loader2 className="animate-spin" size={16} /> Finding a match…</> : <><Zap size={16} /> Quick Match · {stakeLabel(activeStake)}</>}
+              </button>
+            )}
             <button
               onClick={() => setConfirm({ mode: 'create', stake: activeStake, invitedWallet: challengeWallet ?? undefined })}
-              disabled={pending || !signerReady}
-              className="w-full min-h-12 rounded-xl bg-valor-gold text-black font-bold text-sm hover:bg-valor-gold-light transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+              disabled={!canStart(activeStake)}
+              className={`w-full min-h-12 rounded-xl font-bold text-sm transition-colors disabled:opacity-40 flex items-center justify-center gap-2 ${
+                challengeWallet ? 'bg-valor-gold text-black hover:bg-valor-gold-light' : 'border border-valor-border text-slate-200 hover:border-valor-gold/50'
+              }`}
             >
-              <Coins size={16} /> Review stake
+              <Coins size={16} /> {challengeWallet ? (isFree(activeStake) ? 'Review free challenge' : 'Review stake') : 'Open a challenge instead'}
             </button>
+            {!challengeWallet && (
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Quick Match puts you straight in against anyone waiting at this stake — or holds your spot in the arena until someone arrives.
+              </p>
+            )}
           </div>
         )}
 
-        {confirm && (
+        {confirm && isFree(confirm.stake) && (
+          <div className="rounded-xl border border-emerald-500/50 bg-valor-surface p-5 flex flex-col gap-3">
+            <p className="font-display font-black text-white text-sm uppercase tracking-wider">
+              {confirm.mode === 'accept' ? 'Accept free Face-Off' : 'Free Face-Off'}
+            </p>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              A friendly match: nothing is staked or paid out, and it doesn&apos;t change your rating.
+              You still earn XP. First to eliminate the other wins; if time runs out, higher HP wins.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirm(null)} disabled={pending}
+                className="flex-1 min-h-12 rounded-xl border border-valor-border bg-valor-surface-2 text-slate-300 font-bold text-sm hover:text-white transition-colors disabled:opacity-40">
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const c = confirm
+                  setConfirm(null)
+                  if (c.mode === 'create') void onCreate(c.stake, c.invitedWallet)
+                  else void onAccept(c.id!, c.stake)
+                }}
+                disabled={pending}
+                className="flex-1 min-h-12 rounded-xl bg-emerald-500 text-black font-bold text-sm hover:bg-emerald-400 transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {pending ? <><Loader2 className="animate-spin" size={16} /> Starting…</> : confirm.mode === 'accept' ? 'Accept & fight' : confirm.invitedWallet ? 'Send challenge' : 'Open free match'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {confirm && !isFree(confirm.stake) && (
           <div className="rounded-xl border border-valor-gold/50 bg-valor-surface p-5 flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <AlertTriangle className="text-valor-gold shrink-0" size={16} />
@@ -463,11 +571,11 @@ export default function FaceOffPage() {
               <div key={d.id} className="rounded-xl border border-valor-gold/40 bg-valor-gold/[0.06] px-4 py-3 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-white font-bold text-sm truncate">{who(d.challenger_name, d.challenger)}</p>
-                  <p className="text-slate-500 text-[11px]">{d.stake_g.toLocaleString()} {currency} · winner takes {d.winner_takes_g.toLocaleString()}</p>
+                  <p className="text-slate-500 text-[11px]">{isFree(d.stake_g) ? 'Free match · no stake' : `${d.stake_g.toLocaleString()} ${currency} · winner takes ${d.winner_takes_g.toLocaleString()}`}</p>
                 </div>
                 <button
                   onClick={() => setConfirm({ mode: 'accept', stake: d.stake_g, id: d.id })}
-                  disabled={pending || !signerReady}
+                  disabled={!canStart(d.stake_g)}
                   className="shrink-0 px-4 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors disabled:opacity-40"
                 >
                   Accept
@@ -489,11 +597,11 @@ export default function FaceOffPage() {
               <div key={d.id} className="rounded-xl border border-valor-border bg-valor-surface-2/50 px-4 py-3 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-white font-bold text-sm truncate">{who(d.challenger_name, d.challenger)}</p>
-                  <p className="text-slate-500 text-[11px]">{d.stake_g.toLocaleString()} {currency} · winner takes {d.winner_takes_g.toLocaleString()}</p>
+                  <p className="text-slate-500 text-[11px]">{isFree(d.stake_g) ? 'Free match · no stake' : `${d.stake_g.toLocaleString()} ${currency} · winner takes ${d.winner_takes_g.toLocaleString()}`}</p>
                 </div>
                 <button
                   onClick={() => setConfirm({ mode: 'accept', stake: d.stake_g, id: d.id })}
-                  disabled={pending || !signerReady}
+                  disabled={!canStart(d.stake_g)}
                   className="shrink-0 px-4 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors disabled:opacity-40"
                 >
                   Accept
@@ -512,9 +620,17 @@ export default function FaceOffPage() {
                 <div key={d.id} className="rounded-xl border border-valor-border bg-valor-surface-2/50 px-4 py-2.5 flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <p className="text-slate-300 text-sm truncate">
-                      vs {who(d.opponent_name, d.opponent)} · {d.stake_g.toLocaleString()} {currency}
+                      vs {who(d.opponent_name, d.opponent)} · {stakeLabel(d.stake_g)}
                     </p>
                   </div>
+                  {d.status === 'accepted' && (
+                    <button
+                      onClick={() => resumeDuel(d)}
+                      className="shrink-0 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider text-black bg-valor-gold hover:bg-valor-gold-light transition-colors"
+                    >
+                      Join
+                    </button>
+                  )}
                   {d.status === 'accepted' && (
                     <button
                       onClick={() => router.push(`/faceoff/watch/${d.id}`)}
@@ -540,7 +656,7 @@ export default function FaceOffPage() {
 
 // ── In-match HUD ──────────────────────────────────────────────────────────
 
-function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp, ammo, reloading, hitmarker, timeLeft, onExit }: {
+function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp, ammo, reloading, hitmarker, timeLeft, onExit, onStopWaiting }: {
   phase: 'idle' | 'connecting' | 'waiting' | 'countdown' | 'fighting' | 'result'
   pause: { reason: 'opponent_disconnected' | 'reconnecting'; graceSeconds: number } | null
   countdown: number
@@ -552,6 +668,8 @@ function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp
   hitmarker: { id: number; part: 'head' | 'body'; kill: boolean } | null
   timeLeft: number
   onExit: () => void
+  /** While waiting alone on our own open duel: give up and take it down. */
+  onStopWaiting?: () => void
 }) {
   const [confirmExit, setConfirmExit] = useState(false)
   return (
@@ -594,9 +712,21 @@ function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp
       )}
       {(phase === 'connecting' || phase === 'waiting') && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,3,12,0.85)' }}>
-          <p className="text-white font-display font-black text-lg">
-            {phase === 'connecting' ? 'Connecting…' : `Waiting for ${opponentName}…`}
-          </p>
+          <div className="flex flex-col items-center gap-3 px-6 text-center">
+            <p className="text-white font-display font-black text-lg">
+              {phase === 'connecting' ? 'Connecting…' : `Waiting for ${opponentName}…`}
+            </p>
+            {phase === 'waiting' && (
+              <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
+                You&apos;re in the arena. The fight starts the moment they join — we&apos;ve sent them a notification.
+              </p>
+            )}
+            {phase === 'waiting' && onStopWaiting && (
+              <button onClick={onStopWaiting} className="mt-1 text-xs text-slate-500 hover:text-red-300 transition-colors">
+                Stop waiting
+              </button>
+            )}
+          </div>
         </div>
       )}
       {phase === 'countdown' && (

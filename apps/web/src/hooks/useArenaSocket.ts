@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useCallback, useReducer } from 'react'
+import { getPlayerSession } from '@/lib/playerAuth'
 
 // ── Public types ──────────────────────────────────────────────────────────────
 //
@@ -195,7 +196,10 @@ export function useArenaSocket(walletAddress: string) {
     }
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: 'join', duel_id: duelId, wallet: walletAddress }))
+      // The session token proves we are this wallet (arena_ws rejects a join
+      // without it). The page makes sure a session exists before connecting.
+      const token = getPlayerSession()?.token ?? ''
+      socket.send(JSON.stringify({ type: 'join', duel_id: duelId, wallet: walletAddress, token }))
     }
 
     socket.onmessage = (e) => {
@@ -210,7 +214,10 @@ export function useArenaSocket(walletAddress: string) {
           // accept (async) plus their own connect — generous on purpose, but
           // not infinite. If they never show, this is what turns silence
           // into an actionable message instead of an indefinite spinner.
-          armStuckTimer(90_000, "Still haven't found your opponent — they may not have connected. Your stake is safe either way; check your Face-Off history.")
+          // The other fighter has just been pinged (bell + push, see the arena's
+          // ready-check), and Quick Match waits here to be found — so give it
+          // real time before calling it stuck.
+          armStuckTimer(5 * 60_000, "Nobody has joined yet. Your stake is safe either way — check your Face-Offs, or try Quick Match.")
           break
 
         case 'match_found': {

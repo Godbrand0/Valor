@@ -11,6 +11,7 @@ import { useRelayAddress } from '@/hooks/useTransferOut'
 import { magicCanSign, describeSigningError } from '@/lib/magic'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { requirePermitDomain } from '@/editions/chain'
+import { authedFetch } from '@/lib/playerAuth'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 const G_DECIMALS = 18
@@ -68,6 +69,21 @@ export interface DuelsList {
   max_stake_g: number
   /** House cut in basis points (50 = 0.5%). */
   house_cut_bps: number
+  /** The API accepts free (stake 0) duels. Absent on an older API — the UI then
+   *  hides "Free", the same contract check `stake_tiers` already is. */
+  free_allowed?: boolean
+}
+
+/** A friendly match: nothing staked, nothing paid, no rating. */
+export const FREE_STAKE = 0
+export const isFree = (stakeG: number) => stakeG === FREE_STAKE
+
+/** A Face-Off someone is waiting in the arena to have accepted (Quick Match). */
+export interface QuickMatchDuel {
+  id: string
+  stake_g: number
+  challenger: string
+  challenger_name: string | null
 }
 
 /** Everything needed to play one side of a duel. `seed`/`run_token` are
@@ -262,31 +278,62 @@ export function useDuels(walletAddress: string | undefined) {
    *  opening it to anyone — see the `invited_wallet` column on the API side.
    *  `mode` defaults to 'wave_race' (the server does too) so every existing
    *  caller keeps working unchanged. */
+  /** POST with the player's session token (signing in first if needed) — what a
+   *  free duel uses in place of a stake permit to prove who is asking. */
+  const authedPost = useCallback(async <T,>(path: string, body: unknown): Promise<T> => {
+    if (!walletAddress) throw new Error('Not signed in')
+    const res = await authedFetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, walletAddress, walletClient)
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error((json as { error?: string }).error ?? 'Request failed')
+    return json as T
+  }, [walletAddress, walletClient])
+
   const createDuel = useCallback(async (stakeG: number, invitedWallet?: string, mode: DuelMode = 'wave_race'): Promise<DuelRun> => {
     if (!walletAddress) throw new Error('Not signed in')
     setPending(true)
     try {
-      const permit = await signStake(stakeG)
-      const run = await post<DuelRun>('/duels', {
+      const body = {
         wallet: walletAddress, stake_g: stakeG, mode,
         ...(invitedWallet ? { invited_wallet: invitedWallet } : {}),
-        ...permit,
-      })
+      }
+      // A free duel has no stake to sign — the session token vouches instead.
+      const run = isFree(stakeG)
+        ? await authedPost<DuelRun>('/duels', body)
+        : await post<DuelRun>('/duels', { ...body, ...(await signStake(stakeG)) })
       refresh()
       return run
     } finally { setPending(false) }
-  }, [walletAddress, signStake, refresh])
+  }, [walletAddress, signStake, authedPost, refresh])
 
   const acceptDuel = useCallback(async (id: string, stakeG: number): Promise<DuelRun> => {
     if (!walletAddress) throw new Error('Not signed in')
     setPending(true)
     try {
-      const permit = await signStake(stakeG)
-      const run = await post<DuelRun>(`/duels/${id}/accept`, { wallet: walletAddress, ...permit })
+      const run = isFree(stakeG)
+        ? await authedPost<DuelRun>(`/duels/${id}/accept`, { wallet: walletAddress })
+        : await post<DuelRun>(`/duels/${id}/accept`, { wallet: walletAddress, ...(await signStake(stakeG)) })
       refresh()
       return run
     } finally { setPending(false) }
-  }, [walletAddress, signStake, refresh])
+  }, [walletAddress, signStake, authedPost, refresh])
+
+  /**
+   * Quick Match: take the oldest public Face-Off at this stake whose creator is
+   * in the arena right now, or — if nobody is waiting — open one and wait to be
+   * found. Either way the caller then joins the arena with the returned run.
+   */
+  const quickMatch = useCallback(async (stakeG: number): Promise<{ run: DuelRun; found: QuickMatchDuel | null }> => {
+    if (!walletAddress) throw new Error('Not signed in')
+    const res = await fetch(`${API}/duels/quick-match?wallet=${walletAddress.toLowerCase()}&stake_g=${stakeG}`)
+    const json = (await res.json().catch(() => ({}))) as { duel?: QuickMatchDuel | null; error?: string }
+    if (!res.ok) throw new Error(json.error ?? 'Could not search for a match')
+    if (json.duel) return { run: await acceptDuel(json.duel.id, stakeG), found: json.duel }
+    return { run: await createDuel(stakeG, undefined, 'face_off'), found: null }
+  }, [walletAddress, acceptDuel, createDuel])
 
   const submitScore = useCallback(async (id: string, runToken: string, score: number): Promise<DuelResult> => {
     if (!walletAddress) throw new Error('Not signed in')
@@ -301,10 +348,10 @@ export function useDuels(walletAddress: string | undefined) {
     if (!walletAddress) throw new Error('Not signed in')
     setPending(true)
     try {
-      await post(`/duels/${id}/cancel`, { wallet: walletAddress })
+      await authedPost(`/duels/${id}/cancel`, { wallet: walletAddress })
       refresh()
     } finally { setPending(false) }
-  }, [walletAddress, refresh])
+  }, [walletAddress, authedPost, refresh])
 
   return {
     // Whether a signature is actually possible right now. The UI gates staking on
@@ -314,6 +361,7 @@ export function useDuels(walletAddress: string | undefined) {
     loading: list.isLoading,
     error: list.error instanceof Error ? list.error.message : null,
     pending,
-    createDuel, acceptDuel, submitScore, cancelDuel, refresh,
+    freeAllowed: list.data?.free_allowed === true,
+    createDuel, acceptDuel, quickMatch, submitScore, cancelDuel, refresh,
   }
 }
