@@ -78,6 +78,7 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       if (STRIP.test(o.name)) o.visible = false;
     }
 
+    const skinnedMeshes: THREE.SkinnedMesh[] = [];
     clone.traverse((child) => {
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh || STRIP.test(mesh.name)) return;
@@ -123,14 +124,7 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       // sphere (cheap, no skinning) with generous headroom for any reachable pose.
       mesh.frustumCulled = true;
       const skinned = mesh as unknown as THREE.SkinnedMesh;
-      if (skinned.isSkinnedMesh) {
-        const geo = mesh.geometry as THREE.BufferGeometry;
-        if (!geo.boundingSphere) geo.computeBoundingSphere();
-        if (geo.boundingSphere) {
-          skinned.boundingSphere = geo.boundingSphere.clone();
-          skinned.boundingSphere.radius *= 2.5;
-        }
-      }
+      if (skinned.isSkinnedMesh) skinnedMeshes.push(skinned); // cull sphere set after scaling, below
       const src = mesh.material as THREE.Material | THREE.Material[];
       const cloneMat = (m: THREE.Material) => {
         const c = m.clone() as THREE.MeshStandardMaterial;
@@ -158,6 +152,25 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       if (headY > 0.05) clone.scale.setScalar(FPS_TUNING.HEAD_Y / headY);
     }
     clone.updateMatrixWorld(true);
+
+    // Cull sphere, set in WORLD terms. It used to be the geometry's bind sphere x2.5,
+    // but that sphere is in the mesh's own units, and the mesh sits under Mixamo's
+    // centimetre armature scale (~0.0105 here) — so the "padded" sphere was about
+    // 3 cm across, at the feet. Anything that put a body's feet off-screen culled
+    // the whole body: an enemy right in front of you with their feet below the
+    // frame, and your own soldier in third person (camera close behind, looking
+    // forward) — which drew as a rifle floating with no one holding it.
+    //
+    // Now: a sphere centred at hip height with room for the whole standing body,
+    // the rifle and a death fall, converted into each mesh's local space so it is
+    // right whatever scale the file uses.
+    const cullCentre = new THREE.Vector3(0, 0.9, 0);
+    const CULL_R = 1.9;
+    for (const sk of skinnedMeshes) {
+      const c = sk.worldToLocal(clone.localToWorld(cullCentre.clone()));
+      const ws = sk.getWorldScale(new THREE.Vector3()).x || 1;
+      sk.boundingSphere = new THREE.Sphere(c, CULL_R / ws);
+    }
 
     // A real rifle in the grip hand. The rig inherits the bone's world scale, so
     // undo it or the gun comes out the size of the room.

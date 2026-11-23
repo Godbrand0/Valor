@@ -13,7 +13,7 @@ import type { CSSProperties } from 'react';
  * the stock layout renders exactly as it did before this existed.
  */
 
-export type ControlId = 'move' | 'fire' | 'target' | 'ads' | 'crouch' | 'reload' | 'swap' | 'fireMode';
+export type ControlId = 'move' | 'fire' | 'target' | 'ads' | 'crouch' | 'reload' | 'swap' | 'fireMode' | 'view';
 
 export interface ControlPlacement {
   /** Centre X as a fraction of viewport width (0..1). */
@@ -50,6 +50,8 @@ export const CONTROL_DEFS: Record<ControlId, ControlDef> = {
   reload: { label: 'RELOAD', size: 44, side: 'right', edge: 22, bottom: 116 },
   swap: { label: 'SWAP', size: 44, side: 'right', edge: 22, bottom: 170 },
   fireMode: { label: 'MODE', size: 42, side: 'right', edge: 24, bottom: 222 },
+  /** First / third person camera switch. */
+  view: { label: 'VIEW', size: 40, side: 'right', edge: 25, bottom: 272 },
 };
 
 export const CONTROL_IDS = Object.keys(CONTROL_DEFS) as ControlId[];

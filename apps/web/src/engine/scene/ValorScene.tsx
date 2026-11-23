@@ -37,6 +37,8 @@ import { useGauntlet, type GauntletBoardRow, type SeasonInfo } from '@/hooks/use
 import { AIM_DEFAULTS, SENS_MIN, SENS_MAX, SMOOTH_RATE, loadAimSettings, saveAimSettings, type AimSettings, type AimSmoothing } from '../input/aimSettings';
 import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout } from '../input/controlLayout';
 import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
+import { placeCamera, aimPoint, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
+import { classifyMoveDir, type MoveDir } from '../animation/AnimationStateMachine';
 
 /**
  * Valor clone · slice 1 graybox (docs/the plan.md).
@@ -338,6 +340,10 @@ const SMOOTH_OPTIONS: readonly { id: AimSmoothing; label: string }[] = [
   { id: 'balanced', label: 'BALANCED' },
   { id: 'smooth', label: 'SMOOTH' },
 ];
+const VIEW_OPTIONS: readonly { id: CameraView; label: string }[] = [
+  { id: 'first', label: 'FIRST PERSON' },
+  { id: 'third', label: 'THIRD PERSON' },
+];
 const QUALITY_OPTIONS = [
   { id: 'auto', label: 'AUTO' },
   { id: 'high', label: 'HIGH' },
@@ -348,8 +354,10 @@ const QUALITY_OPTIONS = [
  * Pause-menu SETTINGS page: graphics, aim speeds and (on touch) the button layout.
  * Every value applies live, so RESUME is the test.
  */
-function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, onCustomize, onBack, onResume }: {
+function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, setView, onCustomize, onBack, onResume }: {
   isTouch: boolean;
+  view: CameraView;
+  setView: (v: CameraView) => void;
   quality: 'auto' | 'high' | 'low';
   pickQuality: (q: 'auto' | 'high' | 'low') => void;
   aim: AimSettings;
@@ -370,6 +378,14 @@ function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, onCustom
         <Segmented value={quality} options={QUALITY_OPTIONS} onPick={pickQuality} />
         <div style={{ fontSize: 10, color: '#4f5d6a', marginTop: 5 }}>
           AUTO adapts to your device · HIGH renders sharper (needs a strong device) · LOW for laggy devices
+        </div>
+      </div>
+
+      <div style={head}>CAMERA</div>
+      <div style={{ alignSelf: 'flex-start' }}>
+        <Segmented value={view} options={VIEW_OPTIONS} onPick={setView} />
+        <div style={{ fontSize: 10, color: '#4f5d6a', marginTop: 5 }}>
+          {isTouch ? 'Also on the VIEW button in the fight' : 'Also on the V key'} · Face-Off is always first person
         </div>
       </div>
 
@@ -653,6 +669,10 @@ interface Controls {
    * next frame with no remount. The pause menu's SETTINGS panel writes it.
    */
   aim: AimSettings;
+  /** First person (eyes) or third person (over the shoulder). Read every frame,
+   *  like `aim`, so switching needs no remount. Face-Off is a separate scene and
+   *  stays first person only. */
+  view: CameraView;
   fire: boolean;
   ads: boolean;
   /** Touch crouch, held as a TOGGLE rather than a press. The stick and the fire pad
@@ -1201,6 +1221,14 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   // the most teammates that can ever exist (the local player is the +1,
   // never a slot of its own — it's the first-person view).
   const teammateRefs = useRef<Array<THREE.Group | null>>([]);
+  // Third person: your own soldier's body, and where its eyes are. The eye is
+  // what every gameplay system uses; the camera only moves when the view is third.
+  const selfRef = useRef<THREE.Group>(null);
+  const selfRig = useRef<OperatorApi | null>(null);
+  const selfMoveDir = useRef<MoveDir>('forward');
+  const eyeV = useMemo(() => new THREE.Vector3(), []);
+  const camDist = useRef(0);   // eased third-person boom length (snaps in, eases out)
+  const aimPt = useMemo(() => new THREE.Vector3(), []);
   const teammateRigApis = useRef<Array<OperatorApi | null>>([]);
   const teammateStepDist = useRef<number[]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => 0));
   const teammateStepPos = useRef<[number, number][]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => [0, 0]));
@@ -1804,6 +1832,28 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     );
     const adsFov = THREE.MathUtils.lerp(55, 42, adsCur.current);
     if (Math.abs(cam.fov - adsFov) > 0.05) { cam.fov = adsFov; cam.updateProjectionMatrix(); }
+    // The camera is at the EYE right now. Remember it: shots, co-op reports, the
+    // flashlight and the viewmodel all come from the eye in BOTH views.
+    eyeV.copy(cam.position);
+    const tpp = ct.view === 'third';
+    if (tpp) {
+      // Over the shoulder: back along the view, out to the right, pulled in short
+      // of any wall. Snaps IN instantly (never clip), eases back OUT (no popping).
+      cam.updateMatrixWorld();
+      cam.getWorldDirection(fwd);
+      const eyeA: Vec3 = [eyeV.x, eyeV.y, eyeV.z];
+      const placed = placeCamera(eyeA, [fwd.x, fwd.y, fwd.z], [cosY, 0, -sinY], adsCur.current, COLLIDERS);
+      const d = camDist.current > placed.dist ? placed.dist : Math.min(placed.dist, camDist.current + dt * 6);
+      camDist.current = d;
+      const k = placed.dist > 1e-6 ? d / placed.dist : 0;
+      cam.position.set(
+        eyeV.x + (placed.pos[0] - eyeV.x) * k,
+        eyeV.y + (placed.pos[1] - eyeV.y) * k,
+        eyeV.z + (placed.pos[2] - eyeV.z) * k,
+      );
+    } else {
+      camDist.current = 0;
+    }
     cam.updateMatrixWorld();
     cam.matrixWorldInverse.copy(cam.matrixWorld).invert(); // for threat-arrow projection
     audio.setListener(pos.current.x, pos.current.z, yaw.current); // camera is the listener
@@ -1853,7 +1903,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     swapRaise.current = Math.max(0, swapRaise.current - dt * 2.4);
     const vm = vmRef.current;
     // While the weapon is on the deck it must not also be in your hands.
-    if (vm) vm.visible = !dropPhysics.current.active;
+    if (vm) vm.visible = !dropPhysics.current.active && !tpp;
     if (vm) {
       const local = tmp.copy(VIEWMODEL_HIP).lerp(VIEWMODEL_ADS, adsCur.current);
       local.z += view.z; local.y += view.y;                 // where this weapon sits
@@ -1867,7 +1917,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       // camera's forward ray at the colliders; the nearer the wall, the further back the
       // gun is pulled (never fully collapsed, so it doesn't pop out of view).
       cam.getWorldDirection(fwd);
-      const gco: Vec3 = [cam.position.x, cam.position.y, cam.position.z];
+      const gco: Vec3 = [eyeV.x, eyeV.y, eyeV.z];
       const gcd: Vec3 = [fwd.x, fwd.y, fwd.z];
       let wallAhead = Infinity;
       for (const c of COLLIDERS) {
@@ -1880,10 +1930,48 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
         local.z *= k;                 // barrel drawn back toward the eye
         local.y -= (1 - k) * 0.06;    // and dipped a touch, like lowering the weapon
       }
-      vm.position.copy(cam.localToWorld(local));
+      // Placed off the EYE, not the camera: in third person the (hidden) viewmodel
+      // still has to sit where the soldier's gun is, because its muzzle is where
+      // the first-person tracers, flash and laser come from.
+      vm.position.copy(local.applyQuaternion(cam.quaternion).add(eyeV));
       vm.quaternion.copy(cam.quaternion);
       vm.rotateX(-recoilP.current * 1.6);
       vm.updateMatrixWorld();
+    }
+
+    // ── Third person: your soldier's body, its muzzle, and where the crosshair is ──
+    const selfG = selfRef.current;
+    const selfAlive = sim.snapshot().playerAlive;
+    if (selfG) {
+      selfG.visible = tpp && !dropPhysics.current.active;
+      if (tpp) {
+        selfG.position.set(pos.current.x, 0, pos.current.z);
+        // The rig faces +Z at rotation 0; the camera looks down -Z at yaw 0.
+        selfG.rotation.set(0, yaw.current + Math.PI, 0);
+        const rig = selfRig.current;
+        if (rig) {
+          if (!selfAlive) rig.setClip('death');
+          else if (!moving) rig.setClip('idle'); // rifle shouldered
+          else {
+            selfMoveDir.current = classifyMoveDir(mf, ms, selfMoveDir.current);
+            const dir = selfMoveDir.current;
+            rig.setClip(dir === 'left' ? 'strafeL' : dir === 'right' ? 'strafeR'
+              : (dir === 'back' || crouchCur.current > 0.5 || adsCur.current > 0.5) ? 'walk' : 'run');
+          }
+        }
+        // Tracers, flash and laser come out of the rifle you can see.
+        const bodyMuzzle = selfG.getObjectByName('muzzle');
+        if (bodyMuzzle) muzzleRef.current = bodyMuzzle;
+      }
+    }
+    // The point under the crosshair (third person) — shots leave the EYE toward it.
+    cam.getWorldDirection(fwd);
+    let shotDir: Vec3 = [fwd.x, fwd.y, fwd.z];
+    if (tpp) {
+      const enemies = sim.getEnemies().map((e) => ({ x: e.x, z: e.z, alive: e.alive }));
+      const p = aimPoint([cam.position.x, cam.position.y, cam.position.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
+      aimPt.set(p[0], p[1], p[2]);
+      shotDir = aimDirFromEye([eyeV.x, eyeV.y, eyeV.z], p, shotDir);
     }
 
     // ── Attachments: night vision, optic zoom, flashlight, laser ──
@@ -1897,17 +1985,20 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     if (Math.abs(cam.fov - fovTarget) > 0.02) { cam.fov = fovTarget; cam.updateProjectionMatrix(); }
     // Flashlight: a forward cone from the muzzle line.
     flashLight.intensity += ((sim.hasAttachment('light') ? 7 : 0) - flashLight.intensity) * Math.min(1, dt * 10);
-    flashLight.position.copy(cam.position);
-    flashLight.target.position.copy(tmp.copy(cam.position).addScaledVector(fwd, 10));
+    flashLight.position.copy(eyeV);
+    flashLight.target.position.copy(tmp.copy(eyeV).addScaledVector(fwd, 10));
     flashLight.target.updateMatrixWorld();
     // Laser: a red line from the barrel to the first thing the aim ray meets.
     if (sim.hasAttachment('laser')) {
       const mp = muzzleRef.current.getWorldPosition(tmp);
-      const o: Vec3 = [mp.x, mp.y, mp.z], d: Vec3 = [fwd.x, fwd.y, fwd.z];
+      const o: Vec3 = [mp.x, mp.y, mp.z];
+      // Third person: from the visible muzzle to the point under the crosshair.
+      let d: Vec3 = [fwd.x, fwd.y, fwd.z];
+      if (tpp) { tmp2.copy(aimPt).sub(mp); if (tmp2.lengthSq() > 1e-4) { tmp2.normalize(); d = [tmp2.x, tmp2.y, tmp2.z]; } }
       let t = 50;
       for (const c of COLLIDERS) { const tc = rayAABB(o, d, aabbOfCover(c)); if (tc !== null && tc < t) t = tc; }
-      if (fwd.y < -1e-3) { const tf = -mp.y / fwd.y; if (tf > 0 && tf < t) t = tf; } // floor
-      tmp2.copy(mp).addScaledVector(fwd, t);
+      if (d[1] < -1e-3) { const tf = -mp.y / d[1]; if (tf > 0 && tf < t) t = tf; } // floor
+      tmp2.copy(mp).add(tmp.set(d[0], d[1], d[2]).multiplyScalar(t));
       const pa = laserLine.geometry.attributes.position as THREE.BufferAttribute;
       pa.setXYZ(0, mp.x, mp.y, mp.z); pa.setXYZ(1, tmp2.x, tmp2.y, tmp2.z); pa.needsUpdate = true;
       laserDot.position.copy(tmp2);
@@ -1928,8 +2019,11 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     const input: FpsInput = {
       firing: held('Space') || mouseBtn.current.has(0) || ct.fire,
       wantReload: wantReload.current,
-      origin: [cam.position.x, cam.position.y, cam.position.z] as Vec3,
-      dir: [fwd.x, fwd.y, fwd.z] as Vec3,
+      // Always from the EYE. In first person that IS the camera; in third person
+      // the camera is behind you, and firing from it would let you shoot from a
+      // spot your soldier cannot see from.
+      origin: [eyeV.x, eyeV.y, eyeV.z] as Vec3,
+      dir: tpp ? shotDir : [fwd.x, fwd.y, fwd.z] as Vec3,
       adsFactor: adsCur.current,
       moving,
       crouched: crouchCur.current > 0.5,
@@ -1960,7 +2054,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       // is the only one that ever gets real enemies (see the endless flow
       // below), so this is what lets it target/render this player at all.
       coop.sendRemoteInput?.({
-        x: cam.position.x, y: cam.position.y, z: cam.position.z,
+        x: eyeV.x, y: eyeV.y, z: eyeV.z,
         dirX: fwd.x, dirY: fwd.y, dirZ: fwd.z,
         firing: input.firing,
       });
@@ -2136,7 +2230,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // teammate positions/hp — one payload, one source of truth.
     if (coop?.isHost && now - lastCoopBroadcastAt.current > 0.15) {
       lastCoopBroadcastAt.current = now;
-      coop.sendHostState?.({ ...snap, hostPos: { x: cam.position.x, z: cam.position.z, eyeY: cam.position.y } });
+      coop.sendHostState?.({ ...snap, hostPos: { x: eyeV.x, z: eyeV.z, eyeY: eyeV.y } });
     }
     // Co-op non-host: this client's own sim never has real enemies (only the
     // host's does — see FpsWorld's co-op section above), so what actually
@@ -2805,7 +2899,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // drain, where `tmp`/`tmp2` are live with the muzzle position.
     const fwd = new THREE.Vector3();
     cam.getWorldDirection(fwd);
-    dropPhysics.current.throwFrom(cam.position, fwd, cam.quaternion);
+    dropPhysics.current.throwFrom(eyeV, fwd, cam.quaternion);
   }
 
   /** Put the weapon back in your hands (a restart, a new wave, a new op). */
@@ -3331,6 +3425,12 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
           <OperatorRig ref={(a) => { teammateRigApis.current[i] = a; }} modelPath={OPERATOR_GLB} />
         </group>
       ))}
+
+      {/* Your own soldier — drawn only in third person (the frame loop shows it).
+          Always mounted so switching views is instant, not a model load. */}
+      <group ref={selfRef} visible={false}>
+        <OperatorRig ref={(a) => { selfRig.current = a; }} modelPath={OPERATOR_GLB} />
+      </group>
 
       {/* viewmodel — all five guns mounted; the frame loop shows only the active one */}
       <group ref={vmRef}>
@@ -3922,7 +4022,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
 
   // Mobile is a first-class target (Marvy's note): a left move-stick, a right
   // look-pad, and fire/ADS/reload buttons write into this, read by FpsWorld.
-  const controls = useRef<Controls>({ moveX: 0, moveY: 0, lookX: 0, lookY: 0, aim: loadAimSettings(), fire: false, ads: false, crouch: false, reload: false, fireMode: false, swap: false, toggle: null, lockCycle: false, tapAimX: null, tapAimY: null });
+  const controls = useRef<Controls>({ moveX: 0, moveY: 0, lookX: 0, lookY: 0, aim: loadAimSettings(), view: loadCameraView(), fire: false, ads: false, crouch: false, reload: false, fireMode: false, swap: false, toggle: null, lockCycle: false, tapAimX: null, tapAimY: null });
   const audio = useMemo(() => new FpsAudio(), []);
   useEffect(() => () => audio.dispose(), [audio]);
 
@@ -4110,6 +4210,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code === 'KeyM') { e.preventDefault(); setSelect(!menuOpenRef.current); }
+      else if (e.code === 'KeyV' && !e.repeat && !menuOpenRef.current) { e.preventDefault(); toggleView(); } // first / third person
       else if (e.code === 'Escape') {
         e.preventDefault();
         if (selectOpen) setSelect(false);
@@ -4149,6 +4250,17 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       return next;
     });
   }, []);
+  // Camera view (first / third person). Mirrored into controls so the frame loop
+  // switches on the next frame; persisted per device.
+  const [view, setViewState] = useState<CameraView>(loadCameraView);
+  const setView = useCallback((v: CameraView) => {
+    setViewState(v);
+    controls.current.view = v;
+    saveCameraView(v);
+  }, []);
+  const toggleView = useCallback(() => {
+    setView(controls.current.view === 'third' ? 'first' : 'third');
+  }, [setView]);
   // Pause menu page: the main actions, or the settings panel.
   const [pauseView, setPauseView] = useState<'main' | 'settings'>('main');
   // Mobile HUD layout (positions / sizes / opacity), editable from SETTINGS.
@@ -4646,6 +4758,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
             <SettingsPanel
               isTouch={isTouch} quality={quality} pickQuality={pickQuality}
               aim={aim} updateAim={updateAim}
+              view={view} setView={setView}
               onCustomize={() => setEditingLayout(true)}
               onBack={() => setPauseView('main')} onResume={() => { setPauseView('main'); resume(); }}
             />
@@ -4706,7 +4819,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         </div>
         {!isTouch && (
           <div style={{ position: 'absolute', right: 26, top: 20, fontSize: 11, lineHeight: 1.7, textAlign: 'right', color: '#6f7d8c' }}>
-            WASD move · MOUSE / ARROWS look<br />SPACE fire · SHIFT ads · T target · Q/E lean · C crouch · R reload · B fire-mode<br />1 / 2 or X swap weapon · N nvg · F light · L laser · O optic · M ops · ESC release mouse
+            WASD move · MOUSE / ARROWS look<br />SPACE fire · SHIFT ads · T target · Q/E lean · C crouch · R reload · B fire-mode<br />1 / 2 or X swap weapon · N nvg · F light · L laser · O optic · V view · M ops · ESC release mouse
           </div>
         )}
 
@@ -4833,6 +4946,10 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
             style={{ ...touchBtn('#5fe0a8', 44), ...controlStyle('swap', layout) }}><Icon name="swap" size={19} /></div>
           <div {...tap('#8fb8d0', () => { controls.current.fireMode = true; })}
             style={{ ...touchBtn('#8fb8d0', 42), ...controlStyle('fireMode', layout) }}><Icon name="firemode" size={17} /></div>
+          {/* First / third person. Labelled with the view you'd switch TO. */}
+          <div {...tap('#c9b6ff', toggleView)}
+            aria-label={view === 'third' ? 'Switch to first person' : 'Switch to third person'}
+            style={{ ...touchBtn('#c9b6ff', 40), ...controlStyle('view', layout), fontSize: 9, letterSpacing: 0.5 }}>{view === 'third' ? '1P' : '3P'}</div>
 
           {/* attachment toggles — compact top-left row, tucked under the rank bar */}
           <div style={{ position: 'absolute', left: 14, top: 92, display: 'flex', gap: 7 }}>
