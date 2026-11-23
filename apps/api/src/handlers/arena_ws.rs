@@ -158,8 +158,15 @@ pub async fn arena_ws(
 
                             tracing::info!("arena_ws: {} joined duel {}", w, j.duel_id);
                             wallet = Some(w.clone());
+                            // Whoever this isn't — pinged if this player ends up waiting.
+                            let other_wallet = if gate.challenger_wallet == w {
+                                gate.opponent_wallet.clone().unwrap_or_default()
+                            } else {
+                                gate.challenger_wallet.clone()
+                            };
                             let entry = ClientEntry {
                                 duel_id: j.duel_id,
+                                other_wallet,
                                 wallet: w,
                                 name: String::new(), // display name is cosmetic; filled client-side for now
                                 stake_g: gate.stake_g,

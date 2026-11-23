@@ -68,6 +68,28 @@ const MAX_STAKE_G: i64 = STAKE_TIERS[STAKE_TIERS.len() - 1];
 /// winner, not from `submit_duel_score`.
 const VALID_MODES: [&str; 2] = ["wave_race", "face_off"];
 
+/// A friendly match: nothing staked, nothing paid, no rating, and XP that can
+/// never earn the G$ rank-up bonus (see `services::arena_server`). Lets friends
+/// and new players fight for real without putting money down. With no stake
+/// permit to prove who is asking, creating, accepting or cancelling one needs
+/// the player's session token instead.
+pub const FREE_STAKE_G: i64 = 0;
+
+pub fn is_free(stake_g: i64) -> bool {
+    stake_g == FREE_STAKE_G
+}
+
+/// Where a notification about this duel should take the player: straight to it.
+fn duel_link(mode: &str, id: Uuid) -> String {
+    if mode == "face_off" { format!("/faceoff?duel={id}") } else { format!("/duels?duel={id}") }
+}
+
+/// "a free Face-Off", "a 500 G$ duel" — for notifications.
+fn duel_phrase(mode: &str, stake_g: i64) -> String {
+    let what = if mode == "face_off" { "Face-Off" } else { "duel" };
+    if is_free(stake_g) { format!("a free {what}") } else { format!("a {stake_g} G$ {what}") }
+}
+
 fn default_mode() -> String {
     "wave_race".to_string()
 }
@@ -237,6 +259,8 @@ fn payout_chunks(amount_g: u64, ref_key: &str) -> Vec<(u64, String)> {
 /// only the rest. Returns the last transfer's hash, or None when nothing new was
 /// paid or any chunk failed.
 async fn payout(state: &AppState, wallet: &str, amount_g: u64, ref_key: &str, category: &str) -> Option<String> {
+    // A free duel settles with nothing to move — never send a zero transfer.
+    if amount_g == 0 { return None; }
     let chain = state.chain.as_ref()?;
     let addr: Address = wallet.parse().ok()?;
     let chunks = payout_chunks(amount_g, ref_key);
@@ -375,8 +399,9 @@ pub struct CreateRequest {
     /// 'wave_race' (default, unchanged behaviour) or 'face_off'. See VALID_MODES.
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Required for a staked duel; absent for a free one.
     #[serde(flatten)]
-    pub permit: StakePermit,
+    pub permit: Option<StakePermit>,
 }
 
 /// Open a duel: escrow the challenger's stake and issue their run token.
@@ -397,7 +422,7 @@ pub async fn create_duel(
         return HttpResponse::BadRequest().json(json!({"error": "Invalid wallet address"}));
     }
     let tiers = stake_tiers();
-    if !tiers.contains(&body.stake_g) {
+    if !is_free(body.stake_g) && !tiers.contains(&body.stake_g) {
         return HttpResponse::BadRequest().json(json!({
             "error": "Pick one of the standard stake amounts",
             "stake_tiers": tiers,
@@ -409,6 +434,9 @@ pub async fn create_duel(
         }));
     }
     let wallet = normalize_wallet(&body.wallet);
+    if is_free(body.stake_g) {
+        if let Err(resp) = crate::auth::verify_player_token(&req, &wallet) { return resp; }
+    }
 
     let invited_wallet = match &body.invited_wallet {
         Some(w) if !is_valid_wallet(w) =>
@@ -438,9 +466,16 @@ pub async fn create_duel(
 
     let id = Uuid::new_v4();
 
-    let stake_tx = match escrow_stake(&state, &wallet, body.stake_g, &body.permit).await {
-        Ok(tx) => tx,
-        Err(resp) => return resp,
+    let stake_tx = if is_free(body.stake_g) {
+        None
+    } else {
+        let Some(permit) = body.permit.as_ref() else {
+            return HttpResponse::BadRequest().json(json!({"error": "A staked duel needs a signed stake"}));
+        };
+        match escrow_stake(&state, &wallet, body.stake_g, permit).await {
+            Ok(tx) => Some(tx),
+            Err(resp) => return resp,
+        }
     };
 
     // face_off never uses the run-token/elapsed-time anti-cheat anchor — a live
@@ -481,8 +516,8 @@ pub async fn create_duel(
         let challenger_name = display_name(&state.db, &wallet).await.unwrap_or_else(|| "A friend".into());
         notify(
             &state, invited.clone(), "duel",
-            format!("{challenger_name} challenged you to a duel — {} G$", body.stake_g),
-            "/duels",
+            format!("{challenger_name} challenged you to {} — tap to accept", duel_phrase(&body.mode, body.stake_g)),
+            duel_link(&body.mode, id),
         );
     }
 
@@ -499,12 +534,14 @@ pub async fn create_duel(
 #[derive(Deserialize)]
 pub struct AcceptRequest {
     pub wallet: String,
+    /// Required for a staked duel; absent for a free one.
     #[serde(flatten)]
-    pub permit: StakePermit,
+    pub permit: Option<StakePermit>,
 }
 
 pub async fn accept_duel(
     state: web::Data<AppState>,
+    req: HttpRequest,
     path: web::Path<Uuid>,
     body: web::Json<AcceptRequest>,
 ) -> HttpResponse {
@@ -535,9 +572,17 @@ pub async fn accept_duel(
         }
     }
 
-    let stake_tx = match escrow_stake(&state, &wallet, duel.stake_g, &body.permit).await {
-        Ok(tx) => tx,
-        Err(resp) => return resp,
+    let stake_tx = if is_free(duel.stake_g) {
+        if let Err(resp) = crate::auth::verify_player_token(&req, &wallet) { return resp; }
+        None
+    } else {
+        let Some(permit) = body.permit.as_ref() else {
+            return HttpResponse::BadRequest().json(json!({"error": "A staked duel needs a signed stake"}));
+        };
+        match escrow_stake(&state, &wallet, duel.stake_g, permit).await {
+            Ok(tx) => Some(tx),
+            Err(resp) => return resp,
+        }
     };
 
     // Same reasoning as create_duel: face_off has no async run to token/time.
@@ -557,8 +602,10 @@ pub async fn accept_duel(
     let won_race = claimed.map(|r| r.rows_affected() == 1).unwrap_or(false);
     if !won_race {
         tracing::warn!("duel {} accept race lost by {} — refunding", id, wallet);
-        let refunded =
-            payout(&state, &wallet, duel.stake_g as u64, &format!("duel_refund:{stake_tx}"), "duel_refund").await;
+        let refunded = match &stake_tx {
+            Some(tx) => payout(&state, &wallet, duel.stake_g as u64, &format!("duel_refund:{tx}"), "duel_refund").await,
+            None => None,
+        };
         return HttpResponse::Conflict().json(json!({
             "error": "Someone accepted first — your stake was refunded",
             "refund_tx": refunded,
@@ -566,10 +613,11 @@ pub async fn accept_duel(
     }
 
     let accepter_name = display_name(&state.db, &wallet).await.unwrap_or_else(|| "A player".into());
+    let ready = if duel.mode == "face_off" { "join the arena now" } else { "your run is waiting" };
     notify(
         &state, duel.challenger_wallet.clone(), "duel",
-        format!("{accepter_name} accepted your duel challenge — {} G$", duel.stake_g),
-        "/duels",
+        format!("{accepter_name} accepted {} — {ready}", duel_phrase(&duel.mode, duel.stake_g)),
+        duel_link(&duel.mode, id),
     );
 
     let takes = winner_payout(duel.stake_g);
@@ -735,6 +783,7 @@ pub struct CancelRequest {
 /// once someone has staked against you, the duel has to play out.
 pub async fn cancel_duel(
     state: web::Data<AppState>,
+    req: HttpRequest,
     path: web::Path<Uuid>,
     body: web::Json<CancelRequest>,
 ) -> HttpResponse {
@@ -743,6 +792,9 @@ pub async fn cancel_duel(
         return HttpResponse::BadRequest().json(json!({"error": "Invalid wallet address"}));
     }
     let wallet = normalize_wallet(&body.wallet);
+    // The body's wallet alone proved nothing: anyone could cancel anyone's open
+    // duel. Only its owner, signed in, may.
+    if let Err(resp) = crate::auth::verify_player_token(&req, &wallet) { return resp; }
 
     let duel: Option<DuelRow> = sqlx::query_as("SELECT * FROM duels WHERE id = $1")
         .bind(id).fetch_optional(&state.db).await.unwrap_or(None);
@@ -765,6 +817,59 @@ pub async fn cancel_duel(
     HttpResponse::Ok().json(json!({
         "id": id, "cancelled": true, "refund_tx": tx,
     }))
+}
+
+// ── GET /duels/quick-match ────────────────────────────────────────────────────
+#[derive(Deserialize)]
+pub struct QuickMatchQuery {
+    pub wallet: String,
+    pub stake_g: i64,
+}
+
+/// Quick Match: the oldest open, public Face-Off at this stake whose creator is
+/// in the arena RIGHT NOW waiting for an opponent. The client accepts it (staked:
+/// with a signed permit, as any accept) and joins the arena, which pairs them on
+/// the spot. `duel: null` means nobody is waiting — the client then opens its own
+/// open duel at that stake and waits in the arena to be found.
+///
+/// Read-only, so no auth: it reveals nothing the public open-duel list doesn't.
+pub async fn quick_match(state: web::Data<AppState>, q: web::Query<QuickMatchQuery>) -> HttpResponse {
+    if !is_valid_wallet(&q.wallet) {
+        return HttpResponse::BadRequest().json(json!({"error": "Invalid wallet address"}));
+    }
+    if !is_free(q.stake_g) && !stake_tiers().contains(&q.stake_g) {
+        return HttpResponse::BadRequest().json(json!({"error": "Pick one of the standard stake amounts"}));
+    }
+    let wallet = normalize_wallet(&q.wallet);
+
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    let waiting: Vec<Uuid> = if state.arena_server.tx
+        .send(crate::services::arena_server::ServerMsg::WaitingSnapshot { reply }).is_ok()
+    {
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx).await.ok().and_then(|r| r.ok()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if waiting.is_empty() {
+        return HttpResponse::Ok().json(json!({ "duel": null }));
+    }
+
+    let found: Option<(Uuid, String, Option<String>)> = sqlx::query_as(
+        "SELECT d.id, d.challenger_wallet, COALESCE(NULLIF(p.username, ''), p.character_name)
+         FROM duels d LEFT JOIN players p ON p.wallet_address = d.challenger_wallet
+         WHERE d.mode = 'face_off' AND d.status = 'open' AND d.invited_wallet IS NULL
+           AND d.stake_g = $1 AND d.challenger_wallet <> $2 AND d.id = ANY($3)
+         ORDER BY d.created_at ASC LIMIT 1",
+    )
+    .bind(q.stake_g).bind(&wallet).bind(&waiting)
+    .fetch_optional(&state.db).await.unwrap_or(None);
+
+    match found {
+        Some((id, challenger, name)) => HttpResponse::Ok().json(json!({
+            "duel": { "id": id, "stake_g": q.stake_g, "challenger": challenger, "challenger_name": name },
+        })),
+        None => HttpResponse::Ok().json(json!({ "duel": null })),
+    }
 }
 
 // ── GET /duels ────────────────────────────────────────────────────────────────
@@ -858,6 +963,9 @@ pub async fn list_duels(state: web::Data<AppState>, q: web::Query<ListQuery>) ->
         "mine": mine_json,
         "stake_tiers": tiers,
         "min_stake_g": tiers.first().copied().unwrap_or(MIN_STAKE_G),
+        // Friendly (stake 0) duels are accepted. The client shows "Free" only when
+        // the API says so, the same contract check `stake_tiers` already is.
+        "free_allowed": true,
         "max_stake_g": tiers.last().copied().unwrap_or(MAX_STAKE_G),
         "house_cut_bps": HOUSE_CUT_BPS,
     }))
@@ -1243,5 +1351,28 @@ mod tests {
     fn an_ordinary_run_is_accepted() {
         assert!(validate_score(4_000, 120.0).is_ok());
         assert!(validate_score(0, 30.0).is_ok(), "scoring zero is a legitimate result");
+    }
+
+    #[test]
+    fn a_free_duel_request_needs_no_permit_and_a_staked_one_keeps_it() {
+        let free: CreateRequest = serde_json::from_str(r#"{"wallet":"0xabc","stake_g":0,"mode":"face_off"}"#).unwrap();
+        assert!(free.permit.is_none());
+        assert!(is_free(free.stake_g));
+        let staked: CreateRequest = serde_json::from_str(
+            r#"{"wallet":"0xabc","stake_g":500,"deadline":9,"v":27,"r":"0x01","s":"0x02"}"#,
+        ).unwrap();
+        assert_eq!(staked.permit.map(|p| p.deadline), Some(9));
+        let accept: AcceptRequest = serde_json::from_str(r#"{"wallet":"0xabc"}"#).unwrap();
+        assert!(accept.permit.is_none());
+    }
+
+    #[test]
+    fn a_free_duel_pays_nothing_and_notifications_link_to_the_duel() {
+        assert_eq!(winner_payout(FREE_STAKE_G), 0);
+        let id = Uuid::nil();
+        assert_eq!(duel_link("face_off", id), format!("/faceoff?duel={id}"));
+        assert_eq!(duel_link("wave_race", id), format!("/duels?duel={id}"));
+        assert_eq!(duel_phrase("face_off", 0), "a free Face-Off");
+        assert_eq!(duel_phrase("wave_race", 500), "a 500 G$ duel");
     }
 }
