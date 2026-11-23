@@ -240,7 +240,8 @@ export default function AdminAnalyticsPage() {
               <Stat label="Active this month" count={tot('mau')} sub="players, last 30 days" />
               <Stat label="Active this week" count={tot('wau')} sub="players, last 7 days" />
               <Stat label="Weekly retention" value={data.latestRetentionPct === null ? 'n/a' : `${data.latestRetentionPct}%`} sub="last full week, players" />
-              <Stat label="Battles recorded" count={tot('battles')} />
+              <Stat label="Battles recorded" count={tot('battles')} sub="campaign, duels, Endless and Seasonal waves" />
+              <Stat label="Runs started" count={tot('runs')} sub={(() => { const m = (t.runsByMode ?? {}) as unknown as Record<string, number>; return `${n(m.endless)} Endless, ${n(m.seasonal)} Seasonal, ${n(m.gauntlet)} Gauntlet` })()} />
               <Stat label="Earners" count={tot('earners')} sub="wallets paid by a reward pool" />
               <Stat label="Items on-chain" count={tot('itemsRegistered')} />
             </div>

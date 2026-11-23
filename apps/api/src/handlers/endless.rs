@@ -236,6 +236,18 @@ pub async fn start_endless(
     .bind(session_id).bind(&wallet).bind(season).bind(resume - 1).bind(started_at)
     .execute(&state.db).await;
 
+    // Record the run start on-chain with its mode. Waves and deaths already write a
+    // BattleRecorded each, but that event carries no mode, so on-chain data could
+    // not tell an Endless or Seasonal run from a campaign fight. AttemptStarted
+    // does carry one. Fire and forget, like the Gauntlet's: starting a run must not
+    // wait on the relay.
+    if let (Some(chain), Ok(addr)) = (state.chain.as_ref().cloned(), wallet.parse::<Address>()) {
+        let mode = if season == CAMPAIGN_ENDLESS { "endless" } else { "seasonal" };
+        tokio::spawn(async move {
+            let _ = chain.record_attempt(crate::handlers::battles::uuid_to_bytes32(session_id), addr, mode).await;
+        });
+    }
+
     state.endless_sessions.insert(session_id, EndlessSession {
         wallet,
         wave: resume - 1, // the session credits wave N by incrementing to it
