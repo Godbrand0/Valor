@@ -228,7 +228,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         )
         .service(
             web::scope("/seasons")
-                .route("/current", web::get().to(seasons::current)),
+                .route("/current", web::get().to(seasons::current))
+                .route("/programs", web::get().to(seasons::programs)),
         )
         .service(
             web::scope("/campaigns")

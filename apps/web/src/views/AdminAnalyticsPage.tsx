@@ -19,13 +19,15 @@ type Day = DayPoint
 interface Week { weekStart: string; active: number; newPlayers: number; retainedNextWeek: number | null }
 interface Target { id: string; label: string; kind: string; target: number; actual: number | null; baseline: number | null; pct: number | null }
 interface Epoch { epoch: number; start: string; end: string; status: string; txs: number; gMoved: number; gSpent: number; revenue: number; rewards: number; newPlayers: number; activePlayers: number }
+interface Prize { kind: string; name: string; paidG: number; winners: number; firstPaid: string | null; lastPaid: string | null }
 interface Report {
   name: string; asOf: string; startDate: string
   definitions: Record<string, string>
   excludedWallets: { wallet: string; label: string }[]
   totals: Record<string, number | string | null>
   days: Day[]; weekly: Week[]; latestRetentionPct: number | null
-  season: { name: string; start: string; end: string; started: boolean; targets: Target[]; epochs: Epoch[] } | null
+  season: { name: string; start: string; end: string; started: boolean; targets: Target[]; epochs: Epoch[]; preSeasonPrizes?: Prize[] } | null
+  prizePrograms?: Prize[]
 }
 
 const n = (v: number | null | undefined, d = 0) =>
@@ -210,6 +212,13 @@ export default function AdminAnalyticsPage() {
                   </tbody>
                 </table>
               </div>
+              {!!data.season.preSeasonPrizes?.length && (
+                <p className="text-xs text-slate-400">
+                  Paid just before the season:{' '}
+                  {data.season.preSeasonPrizes.map((p) => `${p.name}, ${n(p.paidG)} G$ to ${p.winners} winners on ${p.lastPaid}`).join('; ')}.
+                  {' '}This counts in the all-time totals below, not toward season targets.
+                </p>
+              )}
             </section>
           )}
 
@@ -241,7 +250,7 @@ export default function AdminAnalyticsPage() {
               <Stat label="G$ moved" count={tot('gMoved')} format={(v) => compact(v)} unit="G$" sub="in + out, team wallets excluded" />
               <Stat label="G$ spent in app" count={tot('gSpentInApp')} format={(v) => compact(v)} unit="G$" sub="players into Valor contracts" />
               <Stat label="Spent in marketplace" count={tot('gSpentMarketplace')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('marketplacePurchases'))} purchases`} />
-              <Stat label="Rewards paid out" count={tot('rewardsPaid')} format={(v) => compact(v)} unit="G$" sub="from both reward pools, duel prizes excluded" />
+              <Stat label="Rewards paid out" count={tot('rewardsPaid')} format={(v) => compact(v)} unit="G$" sub={`${compact(tot('rewardsGameplay'))} gameplay, ${compact(tot('prizesPaid'))} prizes, duel prizes excluded`} />
             </div>
             <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1 mt-2">Revenue to Valor</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -250,6 +259,16 @@ export default function AdminAnalyticsPage() {
               <Stat label="Withdrawal fees" count={tot('withdrawFeeRevenue')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('withdrawalsCharged'))} withdrawals, paid to the treasury`} />
               <Stat label="Duel house cut" count={tot('duelCutRevenue')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('duelWins'))} duel wins, kept in the main pool`} />
             </div>
+            {!!data.prizePrograms?.some((p) => p.paidG > 0) && (
+              <>
+                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1 mt-2">Season and campaign prizes</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {data.prizePrograms.filter((p) => p.paidG > 0).map((p) => (
+                    <Stat key={p.name} label={p.name} count={p.paidG} format={(v) => compact(v)} unit="G$" sub={`${p.winners} winners, paid ${p.lastPaid}`} />
+                  ))}
+                </div>
+              </>
+            )}
             <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1 mt-2">Duel stakes</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <Stat label="Staked" count={tot('duelStaked')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('duelStakes'))} stakes, Face-Off and wave race`} />

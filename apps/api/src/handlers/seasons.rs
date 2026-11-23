@@ -104,6 +104,29 @@ async fn payout_board(db: &sqlx::PgPool, s: &SeasonMeta, limit: i64) -> Vec<Boar
 // Public: the live season — its prize pool, the leaderboard within its window, and
 // the estimated payout each rank would earn if the season closed now. This is what
 // makes the competition legible ("play the Gauntlet, here's what's on the line").
+/// GET /seasons/programs — every season and referral campaign, by id, name and
+/// window. Public and read-only: the same names and windows players already see.
+/// The analytics feed needs the ids because a prize payout's on-chain reference is
+/// derived from its season or campaign id (`season_payout:{id}:{wallet}:{i}`,
+/// `referral_campaign_payout:{id}:{wallet}:{i}`), and that is the only way to tell
+/// a prize apart from a gameplay reward on-chain.
+pub async fn programs(state: web::Data<AppState>) -> HttpResponse {
+    type Row = (Uuid, String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, String);
+    let seasons: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, starts_at, ends_at, payout_status FROM seasons ORDER BY starts_at",
+    ).fetch_all(&state.db).await.unwrap_or_default();
+    let campaigns: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, String)> = sqlx::query_as(
+        "SELECT id, name, starts_at, ends_at, payout_status FROM referral_campaigns ORDER BY starts_at",
+    ).fetch_all(&state.db).await.unwrap_or_default();
+    let row = |id: Uuid, name: String, s: chrono::DateTime<chrono::Utc>, e: Option<chrono::DateTime<chrono::Utc>>, st: String| json!({
+        "id": id, "name": name, "starts_at": s.to_rfc3339(), "ends_at": e.map(|t| t.to_rfc3339()), "payout_status": st,
+    });
+    HttpResponse::Ok().json(json!({
+        "seasons": seasons.into_iter().map(|(i, n, s, e, st)| row(i, n, s, e, st)).collect::<Vec<_>>(),
+        "referral_campaigns": campaigns.into_iter().map(|(i, n, s, e, st)| row(i, n, s, Some(e), st)).collect::<Vec<_>>(),
+    }))
+}
+
 pub async fn current(state: web::Data<AppState>) -> HttpResponse {
     // Prefer a season that is live RIGHT NOW (a season carries a scheduled window, so
     // "live" is a time comparison, not just an open-ended ends_at). Otherwise show the
