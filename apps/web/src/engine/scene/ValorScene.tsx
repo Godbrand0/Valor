@@ -1521,7 +1521,12 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       const p = new THREE.Vector3();
       let reach = 0, hips = -1;
       g.traverse((o) => { if ((o as THREE.Bone).isBone) { o.getWorldPosition(p); const d = Math.hypot(p.x - c.x, p.z - c.z); reach = Math.max(reach, d); if (hips < 0 && /hips$/i.test(o.name)) hips = d; } });
-      return { x: +c.x.toFixed(2), z: +c.z.toFixed(2), reach: +reach.toFixed(2), hips: +hips.toFixed(2), visible: g.visible, rig: rigApis.current[i]?.debug() ?? null };
+      // World +Z (barrel) of the rifle actually drawn, and the body's facing.
+      const dirOf = (o: THREE.Object3D) => { const v = new THREE.Vector3(0, 0, 1).applyQuaternion(o.getWorldQuaternion(new THREE.Quaternion())); return [+v.x.toFixed(2), +v.y.toFixed(2), +v.z.toFixed(2)]; };
+      let rifle: THREE.Object3D | null = null;
+      g.traverse((o) => { if (!rifle && o.userData.valorRifle) rifle = o; });
+      return { x: +c.x.toFixed(2), z: +c.z.toFixed(2), reach: +reach.toFixed(2), hips: +hips.toFixed(2), visible: g.visible,
+        rifleFwd: rifle ? dirOf(rifle) : null, bodyFwd: dirOf(g), rig: rigApis.current[i]?.debug() ?? null };
     };
     w.__valorPlayer = () => ({ x: +pos.current.x.toFixed(3), z: +pos.current.z.toFixed(3) });
     w.__valorStagger = () => ({

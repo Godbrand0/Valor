@@ -367,7 +367,7 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   // existing enemy rifle alignment goes through those refs and is deliberately
   // left as it is; these new features must hit the body you can see, in dev and
   // in production alike.
-  type LiveParts = { root: THREE.Object3D; grip: THREE.Object3D | null; gun: THREE.Object3D | null;
+  type LiveParts = { root: THREE.Object3D; body: THREE.Object3D | null; grip: THREE.Object3D | null; gun: THREE.Object3D | null;
     upL: THREE.Object3D | null; upR: THREE.Object3D | null; legL: THREE.Object3D | null; legR: THREE.Object3D | null;
     spine: THREE.Object3D | null; skins: THREE.SkinnedMesh[];
     /** Lift that puts the standing soles on the floor (NaN until measured). */
@@ -376,8 +376,9 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   const liveParts = (): LiveParts | null => {
     const root = groupRef.current;
     if (!root) return null;
-    if (live.current && live.current.root === root) return live.current;
-    const p: LiveParts = { root, grip: null, gun: null, upL: null, upR: null, legL: null, legR: null, spine: null, skins: [], standLift: NaN };
+    // Keyed on the mounted clone too: a hot reload swaps the clone inside the same group.
+    if (live.current && live.current.root === root && live.current.body === root.children[0]) return live.current;
+    const p: LiveParts = { root, body: root.children[0] ?? null, grip: null, gun: null, upL: null, upR: null, legL: null, legR: null, spine: null, skins: [], standLift: NaN };
     root.traverse((o) => {
       if (o.userData.valorRifle && !p.gun) { p.gun = o; p.grip = o.parent; }
       const sk = o as THREE.SkinnedMesh;
@@ -449,10 +450,16 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
     //   gun.local = inverse(grip.world) * character.world
     // and the muzzle-ward offset must be expressed in the grip's local space,
     // which is exactly that same rotation applied to (0,0,z).
-    const gun = gunRef.current, grip = gripRef.current;
-    if (!aligned.current && gun && grip) {
+    // On the body actually drawn (liveParts): the memo's gunRef/gripRef can point
+    // at React Strict Mode's discarded duplicate in development, which left the
+    // visible rifle unaligned (held sideways) depending on how the page loaded.
+    const lp = liveParts();
+    const body = lp?.root.children[0] ?? null; // the mounted clone (<primitive object={rig}>)
+    const gun = lp?.gun ?? null, grip = lp?.grip ?? null;
+    if (!aligned.current && gun && grip && body) {
+      body.updateMatrixWorld(true);
       grip.getWorldQuaternion(tmpQ);   // hand, as animated
-      rig.getWorldQuaternion(tmpQ2);   // character root
+      body.getWorldQuaternion(tmpQ2);  // character root
       gun.quaternion.copy(tmpQ.invert().multiply(tmpQ2));
       // The grip bone's world scale is ~0.01 (Mixamo centimetres), so a child's
       // local units are NOT metres. Convert the metre offset into bone units --
@@ -462,8 +469,6 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
     }
 
     // Grounding + procedural crouch, on the body actually drawn (see liveParts).
-    const lp = liveParts();
-    const body = lp?.root.children[0] ?? null; // the mounted clone (<primitive object={rig}>)
     if (lp && body && !dead.current) {
       deadFor.current = 0;
       // Measure once, on the first animated frame: how far the soles sit below
