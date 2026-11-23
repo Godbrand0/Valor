@@ -26,6 +26,11 @@ const GUN_POS = new THREE.Vector3(0, 0, 0.18);
 const CROUCH_HIP = 1.0;
 const CROUCH_KNEE = -1.9;
 const CROUCH_LEAN = 0.5;
+/** Crouched side-step: steps per second (each a step-out + close), how far the
+ *  thighs open (rad), and how much the moving leg lifts (extra knee bend, rad). */
+const SHUFFLE_HZ = 2.2;
+const SHUFFLE_SPREAD = 0.36;
+const SHUFFLE_LIFT = 0.4;
 
 /**
  * A rifle-carrying enemy body (the plan slice 7b).
@@ -69,6 +74,11 @@ export interface OperatorApi {
    *  this bends hips and knees on top of whatever clip is playing and lowers the
    *  body until the feet are back on the floor. */
   setCrouch(amount: number): void;
+  /** Crouched side-step, toward the body's left (+1) or right (-1); 0 stops.
+   *  The strafe clips crab-walk with the hips turned ~65 degrees, which a crouch
+   *  bend turns into knees pointing sideways; so a crouched sidestep plays over
+   *  the idle stance instead, with the legs stepping out and closing in. */
+  setShuffle(side: -1 | 0 | 1): void;
   /** Fire a one-shot clip over the top (returns to the looping clip after). */
   playOnce(name: ClipName, timeScale?: number): void;
   /** Emissive tint: the aim telegraph (amber) and the hit flash (red). */
@@ -271,6 +281,9 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
     setAim(q) {
       if (q) { aimQ.current.copy(q); aimOn.current = true; } else aimOn.current = false;
     },
+    setShuffle(side) {
+      shuffleSide.current = side;
+    },
     setCrouch(amount) {
       crouch.current = Math.max(0, Math.min(1, amount));
     },
@@ -341,6 +354,10 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   const aimQ = useRef(new THREE.Quaternion());
   const aimOn = useRef(false);
   const crouch = useRef(0);
+  const shuffleSide = useRef<-1 | 0 | 1>(0);
+  const shuffleDir = useRef<-1 | 1>(1);
+  const shufflePhase = useRef(0);
+  const shuffleAmp = useRef(0);
   // Parts of the RENDERED body for the player-only features (rifle aim, crouch).
   //
   // Found by walking what is actually mounted (groupRef), not taken from the refs
@@ -379,6 +396,24 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   const tmpQ2 = useMemo(() => new THREE.Quaternion(), []);
   const tmpV = useMemo(() => new THREE.Vector3(), []);
   const deadFor = useRef(0);
+  const shuffleLat = useMemo(() => new THREE.Vector3(), []);
+  const swAxis = useMemo(() => new THREE.Vector3(), []);
+  const swA = useMemo(() => new THREE.Vector3(), []);
+  const swQ = useMemo(() => new THREE.Quaternion(), []);
+  /** Swing a thigh toward the body's left (+angle) or right, whatever way the
+   *  thigh points: about (thigh direction x body left) in world space, so a bent
+   *  crouch thigh opens its knee sideways rather than rolling on itself. */
+  const swingSideways = (up: THREE.Object3D, knee: THREE.Object3D, angle: number) => {
+    if (!up.parent) return;
+    up.getWorldPosition(swA);
+    knee.getWorldPosition(swAxis);
+    swAxis.sub(swA).normalize().cross(shuffleLat).normalize();
+    up.parent.getWorldQuaternion(swQ);
+    swAxis.applyQuaternion(swQ.invert());
+    swQ.setFromAxisAngle(swAxis, angle);
+    up.quaternion.premultiply(swQ);
+    up.updateMatrixWorld(true);
+  };
   /** World Y of the lowest point of the posed skin (CPU-skinned vertex sample).
    *  Bones sit inside the body, so grounding on them leaves feet, backs and arms
    *  a few centimetres under the floor; this measures the surface itself. */
@@ -446,6 +481,32 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
         lp.upL.rotateX(CROUCH_HIP * c); lp.upR.rotateX(CROUCH_HIP * c);
         lp.legL.rotateX(CROUCH_KNEE * c); lp.legR.rotateX(CROUCH_KNEE * c);
         if (lp.spine) lp.spine.rotateX(CROUCH_LEAN * c);
+        // Crouched side-step: the lead leg lifts and steps out, the trailing leg
+        // lifts and closes in. Eased in and out so stopping doesn't snap the legs.
+        const side = shuffleSide.current;
+        if (side) shuffleDir.current = side;
+        shuffleAmp.current += ((side ? 1 : 0) - shuffleAmp.current) * Math.min(1, dt * 8);
+        const amp = shuffleAmp.current * c;
+        if (amp > 0.01) {
+          if (side) shufflePhase.current = (shufflePhase.current + dt * Math.PI * 2 * SHUFFLE_HZ) % (Math.PI * 2);
+          const ph = shufflePhase.current, s = shuffleDir.current;
+          const lead = s > 0 ? [lp.upL, lp.legL] as const : [lp.upR, lp.legR] as const;
+          const trail = s > 0 ? [lp.upR, lp.legR] as const : [lp.upL, lp.legL] as const;
+          const lift = (up: THREE.Object3D, knee: THREE.Object3D, k: number) => {
+            const a = SHUFFLE_LIFT * k * amp;
+            knee.rotateX(-a); up.rotateX(a * 0.5);
+          };
+          lift(lead[0], lead[1], Math.max(0, Math.cos(ph)));
+          lift(trail[0], trail[1], Math.max(0, -Math.cos(ph)));
+          // Open and close: the lead thigh swings out toward the step, the
+          // trailing one the other way, then both return.
+          const spread = SHUFFLE_SPREAD * amp * Math.sin(ph);
+          body.updateMatrixWorld(true);
+          body.getWorldQuaternion(tmpQ);
+          shuffleLat.set(1, 0, 0).applyQuaternion(tmpQ); // body's left, in world
+          swingSideways(lead[0], lead[1], s * spread);
+          swingSideways(trail[0], trail[1], -s * spread);
+        }
         body.position.y = 0;
         const low = lowestSkinY(lp);
         if (Number.isFinite(low)) body.position.y = SKIN_CLEARANCE - low;

@@ -1956,17 +1956,23 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
         const rig = selfRig.current;
         if (rig) {
           rig.setCrouch(selfAlive ? crouchCur.current : 0);
+          const crouched = crouchCur.current > 0.5;
+          let shuffle: -1 | 0 | 1 = 0;
           if (!selfAlive) rig.setClip('death');
           else if (!moving) rig.setClip('idle'); // rifle shouldered
           else {
             selfMoveDir.current = classifyMoveDir(mf, ms, selfMoveDir.current);
             const dir = selfMoveDir.current;
-            if (dir === 'left') rig.setClip('strafeL');
+            // Crouched sidesteps step over the idle stance (see setShuffle):
+            // the strafe clips' turned hips point a crouched soldier's knees sideways.
+            if (crouched && (dir === 'left' || dir === 'right')) { rig.setClip('idle'); shuffle = dir === 'left' ? 1 : -1; }
+            else if (dir === 'left') rig.setClip('strafeL');
             else if (dir === 'right') rig.setClip('strafeR');
             // No walk-backwards clip: the walk played in reverse reads as a back-pedal.
             else if (dir === 'back') rig.setClip('walk', -1);
-            else rig.setClip(crouchCur.current > 0.5 || adsCur.current > 0.5 ? 'walk' : 'run');
+            else rig.setClip(crouched || adsCur.current > 0.5 ? 'walk' : 'run');
           }
+          rig.setShuffle(shuffle);
         }
         // Tracers, flash and laser come out of the rifle you can see.
         const bodyMuzzle = selfG.getObjectByName('muzzle');
