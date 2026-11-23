@@ -15,9 +15,32 @@ export interface GroupInfo {
 export interface GroupPublic extends GroupInfo {
   description: string
   members: number
+  /** Members who have completed at least one wave this season. Only on the list. */
+  playing?: number
+  /** Waves completed this season by all members, added up. Only on the list. */
+  score?: number
 }
 
-/** Every active community, for the picker on Profile. */
+export interface GroupMember {
+  wallet_address: string
+  username: string | null
+  character_name: string | null
+  character_class: string | null
+  rank: string | null
+  prestige_level: number | null
+  xp: number | null
+  waves: number
+  joined_at: string
+}
+
+export interface GroupRoster {
+  group: GroupInfo & { description: string }
+  season: { id: string; name: string } | null
+  totals: { members: number; playing: number; score: number }
+  members: GroupMember[]
+}
+
+/** Every active community, ranked by this season's score. */
 export function useGroupList() {
   return useQuery({
     queryKey: ['groups'],
@@ -27,6 +50,21 @@ export function useGroupList() {
       return (await res.json()).groups ?? []
     },
     staleTime: 60_000,
+  })
+}
+
+/** A group page: every member with their season score, and the group's total. */
+export function useGroupMembers(slug: string | undefined) {
+  return useQuery({
+    queryKey: ['group-members', slug],
+    queryFn: async (): Promise<GroupRoster | null> => {
+      const res = await fetch(`${API}/groups/${encodeURIComponent(slug!)}/members`)
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error('Could not load members')
+      return res.json()
+    },
+    enabled: !!slug,
+    staleTime: 30_000,
   })
 }
 

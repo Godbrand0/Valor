@@ -5,6 +5,7 @@ import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useMyGroup } from '@/hooks/useGroups'
 import PendingGroupBanner from '@/components/groups/PendingGroupBanner'
 import CommunityPicker from '@/components/groups/CommunityPicker'
+import GroupBadge from '@/components/groups/GroupBadge'
 import { shareCard } from '@/lib/shareCard'
 import { motion } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
@@ -142,11 +143,11 @@ export default function ProfilePage() {
                   </button>
                 )}
                 {myGroup.group && (
-                  <p className="text-[9px] font-black uppercase tracking-[0.18em] text-amber-400 mt-1">
-                    {myGroup.group.name}
+                  <p className="flex items-center mt-1.5">
+                    <GroupBadge slug={myGroup.group.slug} name={myGroup.group.name} size="sm" />
                     <button
                       onClick={() => { if (window.confirm(`Leave ${myGroup.group!.name}?`)) void myGroup.leave().catch(() => {}) }}
-                      className="ml-2 text-slate-600 hover:text-slate-300 normal-case tracking-normal font-medium"
+                      className="ml-2 text-[10px] text-slate-600 hover:text-slate-300 font-medium"
                     >
                       leave
                     </button>

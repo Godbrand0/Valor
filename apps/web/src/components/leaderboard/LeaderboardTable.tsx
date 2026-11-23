@@ -9,6 +9,7 @@ import type { Player } from '@/types'
 import { formatGDollarNumber } from '@/utils/format'
 import { RANK_COLORS, xpForNextRank } from '@/lib/constants'
 import { rankLabel } from '@/lib/ranks'
+import GroupBadge from '@/components/groups/GroupBadge'
 
 interface Props { currentWallet: string | undefined }
 
@@ -126,6 +127,8 @@ export default function LeaderboardTable({ currentWallet }: Props) {
                     </p>
                     {isMe && <span className="text-[7px] bg-amber-400 text-black font-black px-1.5 py-0.5 rounded-sm uppercase shrink-0">You</span>}
                     {isUpdating && <span className="text-[7px] bg-green-500 text-black font-black px-1.5 py-0.5 rounded-sm uppercase shrink-0 animate-pulse">Live</span>}
+                    {/* Not a link: the whole row already links to the player's card. */}
+                    {player.group && <span className="min-w-0 shrink"><GroupBadge slug={player.group.slug} name={player.group.name} size="xs" link={false} /></span>}
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-sm"

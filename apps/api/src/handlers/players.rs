@@ -796,6 +796,30 @@ pub async fn list_players(state: web::Data<AppState>) -> HttpResponse {
         .fetch_all(&state.db)
         .await;
 
+    // Each row carries the player's group so the War Board can show the badge. One
+    // extra query for the 50 wallets on the board, not a join on the player struct,
+    // so `Player` stays the same shape everywhere else it is used.
+    let result = match result {
+        Ok(players) => {
+            let wallets: Vec<String> = players.iter().map(|p| p.wallet_address.clone()).collect();
+            let groups: std::collections::HashMap<String, (String, String)> = sqlx::query_as::<_, (String, String, String)>(
+                "SELECT m.wallet_address, g.slug, g.name
+                 FROM group_members m JOIN player_groups g ON g.id = m.group_id
+                 WHERE m.wallet_address = ANY($1) AND g.active",
+            )
+            .bind(&wallets)
+            .fetch_all(&state.db).await.unwrap_or_default()
+            .into_iter().map(|(w, slug, name)| (w, (slug, name))).collect();
+            Ok(players.into_iter().map(|p| {
+                let group = groups.get(&p.wallet_address).map(|(slug, name)| json!({"slug": slug, "name": name}));
+                let mut v = serde_json::to_value(&p).unwrap_or_else(|_| json!({}));
+                if let Some(obj) = v.as_object_mut() { obj.insert("group".into(), group.unwrap_or(serde_json::Value::Null)); }
+                v
+            }).collect::<Vec<_>>())
+        }
+        Err(e) => Err(e),
+    };
+
     match result {
         Ok(players) => HttpResponse::Ok().json(players),
         Err(e) => {

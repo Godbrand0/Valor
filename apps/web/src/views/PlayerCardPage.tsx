@@ -13,6 +13,8 @@ import PlayerCard from '@/components/player-card/PlayerCard'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 import { RANK_COLORS } from '@/lib/constants'
 import { formatGDollarNumber } from '@/utils/format'
+import { useMyGroup } from '@/hooks/useGroups'
+import GroupBadge from '@/components/groups/GroupBadge'
 
 export default function PlayerCardPage() {
   const params = useParams()
@@ -24,6 +26,9 @@ export default function PlayerCardPage() {
   const [copied, setCopied] = useState(false)
 
   const { status: authStatus } = useResolvedAuth()
+  // The group this card's owner plays for. The lookup is public, so a visitor who
+  // is not signed in sees it too.
+  const ownerGroup = useMyGroup(walletAddress)
   const signedIn = authStatus === 'ready'
 
   const [saving, setSaving] = useState(false)
@@ -152,6 +157,13 @@ export default function PlayerCardPage() {
         </button>
 
         <PlayerCard player={player} isPublic />
+
+        {ownerGroup.group && (
+          <div className="mt-3 flex items-center justify-center gap-2">
+            <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">Plays for</span>
+            <GroupBadge slug={ownerGroup.group.slug} name={ownerGroup.group.name} size="md" />
+          </div>
+        )}
 
         {/* CTA below card */}
         <motion.div

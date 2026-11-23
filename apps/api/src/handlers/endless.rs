@@ -493,6 +493,7 @@ struct ProgressRow {
     username: Option<String>,
     waves: i32,
     group_name: Option<String>,
+    group_slug: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -511,7 +512,7 @@ pub async fn get_board(state: web::Data<AppState>, q: web::Query<BoardQuery>) ->
     let season = q.season_id.unwrap_or(CAMPAIGN_ENDLESS);
     let limit = q.limit.unwrap_or(25).clamp(1, 100);
     let rows = sqlx::query_as::<_, ProgressRow>(
-        "SELECT g.wallet_address, p.username, (g.wave - 1) AS waves, pg.name AS group_name
+        "SELECT g.wallet_address, p.username, (g.wave - 1) AS waves, pg.name AS group_name, pg.slug AS group_slug
          FROM endless_progress g LEFT JOIN players p ON p.wallet_address = g.wallet_address
          LEFT JOIN group_members gm ON gm.wallet_address = g.wallet_address
          LEFT JOIN player_groups pg ON pg.id = gm.group_id
@@ -528,6 +529,8 @@ pub async fn get_board(state: web::Data<AppState>, q: web::Query<BoardQuery>) ->
         "username": r.username,
         "waves": r.waves,
         "group": r.group_name,
+        // The badge links to the group's page, so the board carries the slug too.
+        "group_slug": r.group_slug,
     })).collect();
     HttpResponse::Ok().json(json!({ "entries": entries }))
 }

@@ -50,19 +50,38 @@ async fn member_count(db: &sqlx::PgPool, group_id: Uuid) -> i64 {
         .unwrap_or(0)
 }
 
-// ── GET /groups ────────────────────────────────────────────────────────────────
-// Public: every active community, for the picker on a player's profile.
+// ── GET /groups ───────────────────────────────────────────────────────────────
+// Public: every active community, for the picker on Profile and the groups page.
+//
+// Each group carries its SCORE for the current season: the waves its members have
+// completed, added up. That is the same number the season board ranks players by,
+// so a group's score is just its members' board scores summed, never a second
+// scoring system. Sorted by score, so the list doubles as a ranking of groups.
 pub async fn list_public(state: web::Data<AppState>) -> HttpResponse {
-    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
-        "SELECT g.slug, g.name, g.description, COUNT(m.wallet_address)
-         FROM player_groups g LEFT JOIN group_members m ON m.group_id = g.id
-         WHERE g.active GROUP BY g.id ORDER BY g.created_at",
+    let season = pick_season(&state.db, None).await;
+    let season_id = season.as_ref().map(|(id, _)| *id);
+    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT g.slug, g.name, g.description,
+                COUNT(m.wallet_address),
+                COUNT(e.wallet_address) FILTER (WHERE e.wave > 1),
+                COALESCE(SUM(GREATEST(e.wave - 1, 0)), 0)::BIGINT
+         FROM player_groups g
+         LEFT JOIN group_members m ON m.group_id = g.id
+         LEFT JOIN endless_progress e ON e.wallet_address = m.wallet_address AND e.season_id = $1
+         WHERE g.active
+         GROUP BY g.id
+         ORDER BY 6 DESC, 4 DESC, g.created_at",
     )
+    .bind(season_id)
     .fetch_all(&state.db).await.unwrap_or_default();
-    let groups: Vec<_> = rows.iter().map(|(slug, name, description, n)| json!({
+    let groups: Vec<_> = rows.iter().map(|(slug, name, description, n, playing, score)| json!({
         "slug": slug, "name": name, "description": description, "members": n,
+        "playing": playing, "score": score,
     })).collect();
-    HttpResponse::Ok().json(json!({"groups": groups}))
+    HttpResponse::Ok().json(json!({
+        "groups": groups,
+        "season": season.map(|(id, name)| json!({"id": id, "name": name})),
+    }))
 }
 
 // ── GET /groups/:slug ──────────────────────────────────────────────────────────
@@ -190,9 +209,10 @@ struct BoardRow {
     joined_at: chrono::DateTime<chrono::Utc>,
 }
 
-async fn group_board(db: &sqlx::PgPool, g: &GroupRow, q: &BoardQuery) -> serde_json::Value {
-    // Default to the same season the public Season board shows: live now, else latest.
-    let season: Option<(Uuid, String)> = match q.season_id {
+/// The season a group's numbers are counted in: the one asked for, else the same
+/// season the public Season board shows (live now, else the latest).
+async fn pick_season(db: &sqlx::PgPool, season_id: Option<Uuid>) -> Option<(Uuid, String)> {
+    match season_id {
         Some(id) => sqlx::query_as("SELECT id, name FROM seasons WHERE id = $1")
             .bind(id).fetch_optional(db).await.ok().flatten(),
         None => sqlx::query_as(
@@ -201,7 +221,11 @@ async fn group_board(db: &sqlx::PgPool, g: &GroupRow, q: &BoardQuery) -> serde_j
                       starts_at DESC
              LIMIT 1",
         ).fetch_optional(db).await.ok().flatten(),
-    };
+    }
+}
+
+async fn group_board(db: &sqlx::PgPool, g: &GroupRow, q: &BoardQuery) -> serde_json::Value {
+    let season = pick_season(db, q.season_id).await;
     let Some((season_id, season_name)) = season else {
         return json!({"group": {"slug": g.slug, "name": g.name}, "season": null, "entries": []});
     };
@@ -240,6 +264,86 @@ pub async fn board(state: web::Data<AppState>, path: web::Path<String>, q: web::
         return HttpResponse::NotFound().json(json!({"error": "Group not found"}));
     };
     HttpResponse::Ok().json(group_board(&state.db, &g, &q).await)
+}
+
+#[derive(Deserialize)]
+pub struct MembersQuery {
+    pub season_id: Option<Uuid>,
+}
+
+#[derive(FromRow)]
+struct MemberRow {
+    wallet_address: String,
+    username: Option<String>,
+    character_name: Option<String>,
+    character_class: Option<String>,
+    rank: Option<String>,
+    prestige_level: Option<i32>,
+    xp: Option<i32>,
+    waves: i32,
+    joined_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Most members a group page lists. Far above any group today; it only stops one
+/// huge community from turning the page into a multi-megabyte response.
+const MEMBERS_LIMIT: i64 = 1000;
+
+// ── GET /groups/:slug/members ──────────────────────────────────────────────────
+// Public: the group page. Everyone in the group, with each member's season score and
+// the group's total. Members who joined from a link but have not made a character
+// yet are listed too (no name, no rank), because they ARE in the group and leaving
+// them out would make the member count and the list disagree.
+pub async fn members(state: web::Data<AppState>, path: web::Path<String>, q: web::Query<MembersQuery>) -> HttpResponse {
+    let Some(g) = find_group(&state.db, &path.into_inner()).await else {
+        return HttpResponse::NotFound().json(json!({"error": "Group not found"}));
+    };
+    let season = pick_season(&state.db, q.season_id).await;
+    let season_id = season.as_ref().map(|(id, _)| *id);
+
+    let rows: Vec<MemberRow> = sqlx::query_as(
+        "SELECT m.wallet_address, p.username, p.character_name, p.character_class,
+                p.rank, p.prestige_level, p.xp,
+                COALESCE(GREATEST(e.wave - 1, 0), 0) AS waves, m.joined_at
+         FROM group_members m
+         LEFT JOIN players p ON p.wallet_address = m.wallet_address
+         LEFT JOIN endless_progress e ON e.wallet_address = m.wallet_address AND e.season_id = $2
+         WHERE m.group_id = $1
+         ORDER BY waves DESC, e.reached_at ASC NULLS LAST, p.xp DESC NULLS LAST, m.joined_at ASC
+         LIMIT $3",
+    )
+    .bind(g.id).bind(season_id).bind(MEMBERS_LIMIT)
+    .fetch_all(&state.db).await.unwrap_or_default();
+
+    let total = member_count(&state.db, g.id).await;
+    // Summed in SQL over EVERY member, so the score is right even past the list limit.
+    let (score, playing): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(GREATEST(e.wave - 1, 0)), 0)::BIGINT,
+                COUNT(*) FILTER (WHERE e.wave > 1)
+         FROM group_members m
+         JOIN endless_progress e ON e.wallet_address = m.wallet_address AND e.season_id = $2
+         WHERE m.group_id = $1",
+    )
+    .bind(g.id).bind(season_id)
+    .fetch_one(&state.db).await.unwrap_or((0, 0));
+
+    let list: Vec<_> = rows.iter().map(|r| json!({
+        "wallet_address": r.wallet_address,
+        "username": r.username,
+        "character_name": r.character_name,
+        "character_class": r.character_class,
+        "rank": r.rank,
+        "prestige_level": r.prestige_level,
+        "xp": r.xp,
+        "waves": r.waves,
+        "joined_at": r.joined_at.to_rfc3339(),
+    })).collect();
+
+    HttpResponse::Ok().json(json!({
+        "group": {"slug": g.slug, "name": g.name, "description": g.description},
+        "season": season.map(|(id, name)| json!({"id": id, "name": name})),
+        "totals": {"members": total, "playing": playing, "score": score},
+        "members": list,
+    }))
 }
 
 // ── Admin ──────────────────────────────────────────────────────────────────────

@@ -85,6 +85,8 @@ export interface CharacterCustomization {
 }
 
 export interface Player {
+  /** The player's group. Only the War Board list (GET /players) fills it in. */
+  group?: { slug: string; name: string } | null
   wallet_address: string
 
   // Identity

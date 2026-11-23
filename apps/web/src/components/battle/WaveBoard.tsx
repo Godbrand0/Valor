@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import GroupBadge from '@/components/groups/GroupBadge';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
@@ -13,6 +14,7 @@ export interface WaveBoardEntry {
   waves: number;
   est_payout_g?: number;
   group?: string | null;
+  group_slug?: string | null;
 }
 
 /**
@@ -130,8 +132,8 @@ export default function WaveBoard({
                               style={{ background: '#eab308', color: '#0a0a0f' }}>you</span>
                       )}
                     </p>
-                    {e.group && (
-                      <p className="text-[10px] uppercase tracking-widest text-slate-500 mt-0.5">{e.group}</p>
+                    {e.group && e.group_slug && !groupSlug && (
+                      <div className="mt-1 max-w-full"><GroupBadge slug={e.group_slug} name={e.group} size="xs" /></div>
                     )}
                   </div>
                   <div className="text-right shrink-0">

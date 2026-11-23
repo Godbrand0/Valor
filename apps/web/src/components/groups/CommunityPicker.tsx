@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useGroupList, useMyGroup } from '@/hooks/useGroups'
 
@@ -29,13 +30,16 @@ export default function CommunityPicker() {
 
   return (
     <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.08)' }}>
-      <p className="text-[9px] font-black uppercase tracking-[0.18em] text-slate-500">Community</p>
+      <div className="flex items-center justify-between">
+        <p className="text-[9px] font-black uppercase tracking-[0.18em] text-slate-500">Community</p>
+        <Link href="/groups" className="text-[9px] font-black uppercase tracking-[0.18em] text-slate-500 hover:text-white">All groups</Link>
+      </div>
       {groups.map((g) => {
         const joined = mine.group?.slug === g.slug
         return (
           <div key={g.slug} className="flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-bold text-white truncate">{g.name}</p>
+              <Link href={`/groups/${g.slug}`} className="block text-sm font-bold text-white truncate hover:text-amber-400">{g.name}</Link>
               {g.members >= 5 && <p className="text-[10px] text-slate-500">{g.members.toLocaleString()} members</p>}
             </div>
             {joined ? (
