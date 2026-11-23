@@ -67,6 +67,10 @@ const PLAYER_R = 0.35;
 const WALK = 3.4;     // m/s base
 const ADS_MOVE = 0.55;
 const CROUCH_MOVE = 0.5;
+/** Ground speed (m/s) each operator.glb locomotion clip covers at timeScale 1,
+ *  measured from its root motion at the in-game scale. Used to play your own
+ *  third-person body at the rate that matches how fast you move. */
+const SELF_CLIP_SPEED = { walk: 1.02, run: 3.17, stepLeft: 2.79, stepRight: 3.31 } as const;
 
 const LOOK_SENS = 0.0010;       // rad per mouse pixel — fine aim (was far too fast)
 const KEY_LOOK = 0.9;           // rad/s for arrow-key look — small nudges
@@ -1965,12 +1969,19 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
             const dir = selfMoveDir.current;
             // Crouched sidesteps step over the idle stance (see setShuffle):
             // the strafe clips' turned hips point a crouched soldier's knees sideways.
+            // Each clip plays at the rate that makes its feet cover the ground you
+            // actually cover, so planted feet stay planted instead of skating.
+            const ground = speed * Math.hypot(mf, ms);
+            const rate = (clipSpeed: number) => Math.max(0.6, Math.min(1.9, ground / clipSpeed));
             if (crouched && (dir === 'left' || dir === 'right')) { rig.setClip('idle'); shuffle = dir === 'left' ? 1 : -1; }
-            else if (dir === 'left') rig.setClip('strafeL');
-            else if (dir === 'right') rig.setClip('strafeR');
+            // operator.glb's strafe clips are named backwards: 'strafeR' steps to the
+            // body's LEFT and 'strafeL' to its RIGHT (measured: see SELF_CLIP_SPEED).
+            else if (dir === 'left') rig.setClip('strafeR', rate(SELF_CLIP_SPEED.stepLeft));
+            else if (dir === 'right') rig.setClip('strafeL', rate(SELF_CLIP_SPEED.stepRight));
             // No walk-backwards clip: the walk played in reverse reads as a back-pedal.
-            else if (dir === 'back') rig.setClip('walk', -1);
-            else rig.setClip(crouched || adsCur.current > 0.5 ? 'walk' : 'run');
+            else if (dir === 'back') rig.setClip('walk', -rate(SELF_CLIP_SPEED.walk));
+            else if (crouched || adsCur.current > 0.5) rig.setClip('walk', rate(SELF_CLIP_SPEED.walk));
+            else rig.setClip('run', rate(SELF_CLIP_SPEED.run));
           }
           rig.setShuffle(shuffle);
         }
