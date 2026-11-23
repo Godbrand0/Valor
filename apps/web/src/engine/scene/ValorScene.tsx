@@ -39,7 +39,7 @@ import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout 
 import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
 import { placeCamera, aimPoint, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
 import type { MoveDir } from '../animation/AnimationStateMachine';
-import { driveOperatorLocomotion, aimOperatorAlong } from './operatorLocomotion';
+import { driveOperatorLocomotion, aimOperatorAlong, localToWorldXZ, worldToLocalFwdRight } from './operatorLocomotion';
 
 /**
  * Valor clone · slice 1 graybox (docs/the plan.md).
@@ -1790,9 +1790,9 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     let speed = WALK * (1 - 0.45 * adsCur.current) * (1 - (1 - CROUCH_MOVE) * crouchCur.current);
     if (adsCur.current > 0.5) speed = Math.min(speed, WALK * ADS_MOVE);
     const sinY = Math.sin(yaw.current), cosY = Math.cos(yaw.current);
-    // forward on ground = (-sinY, 0, -cosY); right = (cosY, 0, -sinY)
-    let nx = pos.current.x + (-sinY * mf + cosY * ms) * speed * dt;
-    let nz = pos.current.z + (-cosY * mf - sinY * ms) * speed * dt;
+    const [dx, dz] = localToWorldXZ(yaw.current, mf, ms);
+    let nx = pos.current.x + dx * speed * dt;
+    let nz = pos.current.z + dz * speed * dt;
     ({ x: nx, z: nz } = clampAndSlide(pos.current.x, pos.current.z, nx, nz));
     pos.current.x = nx; pos.current.z = nz;
     if (moving) bobPhase.current += dt * (adsCur.current > 0.5 ? 6 : 9);
@@ -3281,9 +3281,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   function showHitDir(fromDir: Vec3) {
     const el = hud.current.hitDir;
     if (!el) return;
-    const cy = Math.cos(yaw.current), sy = Math.sin(yaw.current);
-    const f = fromDir[0] * -sy + fromDir[2] * -cy; // forward component
-    const rr = fromDir[0] * cy + fromDir[2] * -sy; // right component
+    const [f, rr] = worldToLocalFwdRight(yaw.current, fromDir[0], fromDir[2]);
     el.style.opacity = '1';
     el.style.transform = `rotate(${Math.atan2(rr, f)}rad)`;
     window.setTimeout(() => { if (el) el.style.opacity = '0'; }, 500);

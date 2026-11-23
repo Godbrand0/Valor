@@ -50,7 +50,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type MutableRefObject }
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { OperatorRig, type OperatorApi } from './OperatorRig'
-import { driveOperatorLocomotion, aimOperatorYawPitch } from './operatorLocomotion'
+import { driveOperatorLocomotion, aimOperatorYawPitch, localToWorldXZ, worldToLocalFwdRight } from './operatorLocomotion'
 import type { MoveDir } from '../animation/AnimationStateMachine'
 import { makeGunMesh } from './GunMesh'
 import { buildViewmodelHands, VIEWMODEL_HIP, VIEWMODEL_ADS, WEAPON_VIEW } from './viewmodelHands'
@@ -524,7 +524,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
   // server, never yaw, so a wrong guess left the camera staring at a wall for
   // the entire match while position silently slid out from under it. See
   // `hasSnapped` below for the actual fix.
-  const nearSide = walletAddress.toLowerCase() < opponentWallet.toLowerCase()
+  const nearSide = walletAddress < opponentWallet
   const yaw = useRef(nearSide ? 0 : Math.PI)
   const pitch = useRef(0)
 
@@ -695,7 +695,6 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
   const opponentApi = useRef<OperatorApi | null>(null)
   const opponentGroup = useRef<THREE.Group>(null)
   const opponentRendered = useRef(new THREE.Vector3(0, 0, nearSide ? -7.3 : 7.3))
-  const opponentRenderedYaw = useRef(0)
   const oppBuffer = useRef<OppSample[]>([])
   const oppLastSnap = useRef<unknown>(null)
   const oppPrevPos = useRef<{ x: number; z: number } | null>(null)
@@ -787,11 +786,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
     if (rawLen > 1) { mx /= rawLen; my /= rawLen }
 
     if (fighting) {
-      // Camera convention, same as arena_server.rs: forward (-sin, -cos), right (cos, -sin).
-      const sy = Math.sin(yaw.current)
-      const cy = Math.cos(yaw.current)
-      const dirX = -sy * my + cy * mx
-      const dirZ = -cy * my - sy * mx
+      const [dirX, dirZ] = localToWorldXZ(yaw.current, my, mx)
       const targetX = localPos.current.x + dirX * WALK_SPEED * dt
       const targetZ = localPos.current.z + dirZ * WALK_SPEED * dt
       const [nx, nz] = slideMove(localPos.current.x, localPos.current.z, targetX, targetZ, PLAYER_RADIUS, ROOM_OBSTACLES)
@@ -941,9 +936,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
         vignetteHit.current = 1
         const hitDirEl = hitFxDom.current.hitDir
         if (hitDirEl) {
-          const cy = Math.cos(yaw.current), sy = Math.sin(yaw.current)
-          const forward = fx * -sy + fz * -cy
-          const right = fx * cy + fz * -sy
+          const [forward, right] = worldToLocalFwdRight(yaw.current, fx, fz)
           hitDirEl.style.opacity = '1'
           hitDirEl.style.transform = `rotate(${Math.atan2(right, forward)}rad)`
           window.setTimeout(() => { if (hitDirEl) hitDirEl.style.opacity = '0' }, 500)
@@ -978,7 +971,6 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
       const rpitch = a.pitch + (b.pitch - a.pitch) * k
       opponentRendered.current.x = rx
       opponentRendered.current.z = rz
-      opponentRenderedYaw.current = ryaw
       if (opponentGroup.current) {
         opponentGroup.current.position.set(rx, 0, rz)
         // The rig faces +Z at rotation 0; yaw 0 looks down -Z.
@@ -994,12 +986,12 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
         oppVel.current.z += ((rz - prev.z) / dt - oppVel.current.z) * vk
       }
       oppPrevPos.current = { x: rx, z: rz }
-      const sy = Math.sin(ryaw), cy = Math.cos(ryaw)
-      const vf = oppVel.current.x * -sy + oppVel.current.z * -cy
-      const vr = oppVel.current.x * cy + oppVel.current.z * -sy
+      const [vf, vr] = worldToLocalFwdRight(ryaw, oppVel.current.x, oppVel.current.z)
       const sp = Math.hypot(vf, vr)
-      const latest = buf[buf.length - 1]
-      oppCrouch.current += ((latest.crouching ? 1 : 0) - oppCrouch.current) * Math.min(1, dt * 10)
+      // `b`, not the newest-arrived sample: crouch/ADS must come from the same
+      // moment as rx/rz/ryaw (delayed by OPPONENT_DELAY_MS), or stance can read
+      // from a packet the body hasn't caught up to yet.
+      oppCrouch.current += ((b.crouching ? 1 : 0) - oppCrouch.current) * Math.min(1, dt * 10)
 
       const api = opponentApi.current
       if (api) {
@@ -1010,7 +1002,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
           right: sp > 0.25 ? vr / WALK_SPEED : 0,
           speed: WALK_SPEED,
           crouch: oppCrouch.current,
-          ads: latest.ads,
+          ads: b.ads,
         }, oppMoveDir.current)
         // Their rifle points where they're aiming, up and down included.
         if (alive) aimOperatorYawPitch(api, ryaw, rpitch)

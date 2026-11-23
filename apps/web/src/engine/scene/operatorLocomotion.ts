@@ -59,6 +59,24 @@ export function driveOperatorLocomotion(rig: OperatorApi, inp: LocomotionInput, 
   return dir;
 }
 
+/**
+ * Camera-yaw convention shared with arena_server.rs: forward = (-sin, -cos),
+ * right = (cos, -sin). `localToWorldXZ` turns a forward/right move into a
+ * world X/Z delta; `worldToLocalFwdRight` is its inverse, decomposing a
+ * world-space vector (a hit direction, a velocity) back into forward/right.
+ * One shared pair instead of each call site re-deriving the same trig, which
+ * is what let the client and arena_server.rs drift apart before.
+ */
+export function localToWorldXZ(yaw: number, forward: number, right: number): [number, number] {
+  const sy = Math.sin(yaw), cy = Math.cos(yaw);
+  return [-sy * forward + cy * right, -cy * forward - sy * right];
+}
+
+export function worldToLocalFwdRight(yaw: number, worldX: number, worldZ: number): [number, number] {
+  const sy = Math.sin(yaw), cy = Math.cos(yaw);
+  return [worldX * -sy + worldZ * -cy, worldX * cy + worldZ * -sy];
+}
+
 const AIM_M = new THREE.Matrix4();
 const AIM_Q = new THREE.Quaternion();
 const AIM_D = new THREE.Vector3();

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import type { PlayerSnapshot } from '@/hooks/useArenaSocket'
+import { localToWorldXZ } from '@/engine/scene/operatorLocomotion'
 
 /** Dev preview of the Face-Off arena room, bypassing real matchmaking (no
  *  auth, no /ws/arena, no stake) so the visuals can be checked without a
@@ -52,10 +53,9 @@ export default function DevFaceoffPreview() {
       for (const s of SCRIPT) { if (t < acc + s[0]) { step = s; break } acc += s[0] }
       const [, fwd, right, crouching, pitch] = step
       const yaw = Math.PI
-      // Camera convention, as arena_server.rs: forward (-sin, -cos), right (cos, -sin).
-      const sy = Math.sin(yaw), cy = Math.cos(yaw)
-      x += (-sy * fwd + cy * right) * WALK * 0.05
-      z += (-cy * fwd - sy * right) * WALK * 0.05
+      const [dx, dz] = localToWorldXZ(yaw, fwd, right)
+      x += dx * WALK * 0.05
+      z += dz * WALK * 0.05
       x = Math.max(-3, Math.min(3, x)); z = Math.max(-6.5, Math.min(-1.5, z))
       // A fresh object per tick, like a real state_update.
       latestPlayers.current.set(OPP, {
