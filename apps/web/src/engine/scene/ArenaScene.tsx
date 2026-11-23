@@ -50,6 +50,8 @@ import { Suspense, useEffect, useMemo, useRef, useState, type MutableRefObject }
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { OperatorRig, type OperatorApi } from './OperatorRig'
+import { driveOperatorLocomotion, aimOperatorYawPitch, localToWorldXZ, worldToLocalFwdRight } from './operatorLocomotion'
+import type { MoveDir } from '../animation/AnimationStateMachine'
 import { makeGunMesh } from './GunMesh'
 import { buildViewmodelHands, VIEWMODEL_HIP, VIEWMODEL_ADS, WEAPON_VIEW } from './viewmodelHands'
 import { GUN_LENGTH } from './gunModels'
@@ -110,9 +112,14 @@ const ADS_LOOK_SENS_MULT = 0.55
  *  arrives — a blend, not a hard correction, so ordinary latency jitter
  *  doesn't visibly pop the camera. */
 const RECONCILE_STRENGTH = 0.25
-/** How quickly the opponent's rendered position/yaw chases its latest
- *  snapshot — a simple critically-damped-ish lerp, not real interpolation. */
-const OPPONENT_SMOOTH = 0.35
+/** The opponent is drawn this far in the past, blended between the two server
+ *  snapshots either side of that moment. Two 50ms ticks of slack absorb
+ *  ordinary network jitter without stutter or rubber-banding. */
+const OPPONENT_DELAY_MS = 100
+/** Snapshots kept for that interpolation (~1s at 20 Hz). */
+const OPPONENT_BUFFER = 20
+
+interface OppSample { t: number; x: number; z: number; yaw: number; pitch: number; crouching: boolean; ads: boolean }
 /** Metres between footfalls — matches ValorScene's STRIDE. */
 const STRIDE = 0.95
 
@@ -492,9 +499,15 @@ function TouchControls({ input, audio }: { input: InputRefs; audio: FpsAudio }) 
 
 function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolean; audio: FpsAudio; hitFxDom: MutableRefObject<HitFxDom> }) {
   const {
-    walletAddress, opponentWallet, fighting, sendInput, drainHits, latestPlayers,
+    walletAddress: walletRaw, opponentWallet: opponentRaw, fighting, sendInput, drainHits, latestPlayers,
     onLocalHp, onAmmo, onOpponentHp, onHit, input, isTouch, equippedGun, audio, hitFxDom,
   } = props
+  // The server lowercases every wallet (normalize_wallet) and keys snapshots and
+  // hits by it; the signed-in address arrives checksummed (mixed case). Compare
+  // in the server's form, or our own snapshot is never found: no spawn snap, no
+  // HP/ammo, no hitmarkers.
+  const walletAddress = walletRaw.toLowerCase()
+  const opponentWallet = opponentRaw.toLowerCase()
   const { camera, gl, scene } = useThree()
   const { keys, mouseDX, mouseDY, touchMoveX, touchMoveY, firing, touchFiring, rightMouseDown, wantReload, touchCrouch, touchAds, touchDX, touchDY, aim: aimRef } = input
   const gunId = equippedGun ?? 'assault_rifle'
@@ -511,7 +524,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
   // server, never yaw, so a wrong guess left the camera staring at a wall for
   // the entire match while position silently slid out from under it. See
   // `hasSnapped` below for the actual fix.
-  const nearSide = walletAddress.toLowerCase() < opponentWallet.toLowerCase()
+  const nearSide = walletAddress < opponentWallet
   const yaw = useRef(nearSide ? 0 : Math.PI)
   const pitch = useRef(0)
 
@@ -682,7 +695,12 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
   const opponentApi = useRef<OperatorApi | null>(null)
   const opponentGroup = useRef<THREE.Group>(null)
   const opponentRendered = useRef(new THREE.Vector3(0, 0, nearSide ? -7.3 : 7.3))
-  const opponentRenderedYaw = useRef(0)
+  const oppBuffer = useRef<OppSample[]>([])
+  const oppLastSnap = useRef<unknown>(null)
+  const oppPrevPos = useRef<{ x: number; z: number } | null>(null)
+  const oppVel = useRef({ x: 0, z: 0 })
+  const oppCrouch = useRef(0)
+  const oppMoveDir = useRef<MoveDir>('forward')
   const lastOpponentAmmo = useRef<number | null>(null)
   const lastOpponentHp = useRef<number | null>(null)
 
@@ -768,10 +786,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
     if (rawLen > 1) { mx /= rawLen; my /= rawLen }
 
     if (fighting) {
-      const sy = Math.sin(yaw.current)
-      const cy = Math.cos(yaw.current)
-      const dirX = sy * my + cy * mx
-      const dirZ = cy * my + (-sy) * mx
+      const [dirX, dirZ] = localToWorldXZ(yaw.current, my, mx)
       const targetX = localPos.current.x + dirX * WALK_SPEED * dt
       const targetZ = localPos.current.z + dirZ * WALK_SPEED * dt
       const [nx, nz] = slideMove(localPos.current.x, localPos.current.z, targetX, targetZ, PLAYER_RADIUS, ROOM_OBSTACLES)
@@ -921,9 +936,7 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
         vignetteHit.current = 1
         const hitDirEl = hitFxDom.current.hitDir
         if (hitDirEl) {
-          const cy = Math.cos(yaw.current), sy = Math.sin(yaw.current)
-          const forward = fx * -sy + fz * -cy
-          const right = fx * cy + fz * -sy
+          const [forward, right] = worldToLocalFwdRight(yaw.current, fx, fz)
           hitDirEl.style.opacity = '1'
           hitDirEl.style.transform = `rotate(${Math.atan2(right, forward)}rad)`
           window.setTimeout(() => { if (hitDirEl) hitDirEl.style.opacity = '0' }, 500)
@@ -931,34 +944,76 @@ function ArenaWorld(props: ArenaSceneProps & { input: InputRefs; isTouch: boolea
       }
     }
 
-    // Opponent — smoothly chase the latest snapshot, never predicted.
+    // Opponent — drawn from server snapshots only, never predicted: buffered and
+    // shown OPPONENT_DELAY_MS in the past, blended between the snapshots either
+    // side of that moment (each state_update is a fresh object, so a new
+    // identity is a new tick).
     const opp = latestPlayers.current.get(opponentWallet)
     if (opp) {
       onOpponentHp(opp.hp)
-      const t = Math.min(1, OPPONENT_SMOOTH * (dt * 20))
-      opponentRendered.current.x += (opp.x - opponentRendered.current.x) * t
-      opponentRendered.current.z += (opp.z - opponentRendered.current.z) * t
-      opponentRenderedYaw.current = lerpAngle(opponentRenderedYaw.current, opp.yaw, t)
-      if (opponentGroup.current) {
-        opponentGroup.current.position.set(opponentRendered.current.x, 0, opponentRendered.current.z)
-        opponentGroup.current.rotation.y = opponentRenderedYaw.current
+      const now = performance.now()
+      const buf = oppBuffer.current
+      if (opp !== oppLastSnap.current) {
+        oppLastSnap.current = opp
+        buf.push({ t: now, x: opp.x, z: opp.z, yaw: opp.yaw, pitch: opp.pitch, crouching: opp.crouching, ads: opp.ads })
+        if (buf.length > OPPONENT_BUFFER) buf.shift()
       }
+      const renderAt = now - OPPONENT_DELAY_MS
+      let a = buf[0], b = buf[buf.length - 1]
+      for (let i = buf.length - 1; i > 0; i--) {
+        if (buf[i - 1].t <= renderAt) { a = buf[i - 1]; b = buf[i]; break }
+      }
+      const span = b.t - a.t
+      const k = span > 0 ? Math.max(0, Math.min(1, (renderAt - a.t) / span)) : 1
+      const rx = a.x + (b.x - a.x) * k
+      const rz = a.z + (b.z - a.z) * k
+      const ryaw = lerpAngle(a.yaw, b.yaw, k)
+      const rpitch = a.pitch + (b.pitch - a.pitch) * k
+      opponentRendered.current.x = rx
+      opponentRendered.current.z = rz
+      if (opponentGroup.current) {
+        opponentGroup.current.position.set(rx, 0, rz)
+        // The rig faces +Z at rotation 0; yaw 0 looks down -Z.
+        opponentGroup.current.rotation.y = ryaw + Math.PI
+      }
+
+      // Velocity of the DRAWN body (not the raw snapshots), smoothed, then split
+      // into along-facing / to-the-right so the legs match the actual movement.
+      const prev = oppPrevPos.current
+      if (prev && dt > 0) {
+        const vk = Math.min(1, dt * 12)
+        oppVel.current.x += ((rx - prev.x) / dt - oppVel.current.x) * vk
+        oppVel.current.z += ((rz - prev.z) / dt - oppVel.current.z) * vk
+      }
+      oppPrevPos.current = { x: rx, z: rz }
+      const [vf, vr] = worldToLocalFwdRight(ryaw, oppVel.current.x, oppVel.current.z)
+      const sp = Math.hypot(vf, vr)
+      // `b`, not the newest-arrived sample: crouch/ADS must come from the same
+      // moment as rx/rz/ryaw (delayed by OPPONENT_DELAY_MS), or stance can read
+      // from a packet the body hasn't caught up to yet.
+      oppCrouch.current += ((b.crouching ? 1 : 0) - oppCrouch.current) * Math.min(1, dt * 10)
 
       const api = opponentApi.current
       if (api) {
-        if (lastOpponentHp.current !== null && opp.hp < lastOpponentHp.current) {
-          if (opp.hp <= 0) api.setClip('death')
-          else api.playOnce('hit')
-        } else if (opp.hp > 0) {
-          if (lastOpponentAmmo.current !== null && opp.ammo < lastOpponentAmmo.current) {
-            api.playOnce('fire', 1.4)
-            // Spatialised — you hear which side an incoming shot came from,
-            // same as ValorScene's enemyShot cue.
-            audio.enemyShot([opp.x, EYE_HEIGHT, opp.z])
-          } else {
-            const moved = Math.hypot(opp.x - opponentRendered.current.x, opp.z - opponentRendered.current.z) > 0.01
-            api.setClip(moved ? 'walk' : 'idle')
-          }
+        const alive = opp.hp > 0
+        oppMoveDir.current = driveOperatorLocomotion(api, {
+          alive,
+          fwd: sp > 0.25 ? vf / WALK_SPEED : 0,
+          right: sp > 0.25 ? vr / WALK_SPEED : 0,
+          speed: WALK_SPEED,
+          crouch: oppCrouch.current,
+          ads: b.ads,
+        }, oppMoveDir.current)
+        // Their rifle points where they're aiming, up and down included.
+        if (alive) aimOperatorYawPitch(api, ryaw, rpitch)
+        else api.setAim(null)
+        if (lastOpponentHp.current !== null && opp.hp < lastOpponentHp.current && alive) {
+          api.playOnce('hit')
+        } else if (alive && lastOpponentAmmo.current !== null && opp.ammo < lastOpponentAmmo.current) {
+          api.playOnce('fire', 1.4)
+          // Spatialised — you hear which side an incoming shot came from,
+          // same as ValorScene's enemyShot cue.
+          audio.enemyShot([opp.x, EYE_HEIGHT, opp.z])
         }
       }
       lastOpponentAmmo.current = opp.ammo

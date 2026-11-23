@@ -234,14 +234,14 @@ export function useArenaSocket(walletAddress: string) {
 
         case 'state_update': {
           const players = (msg.players as PlayerSnapshot[]) ?? []
-          for (const p of players) latestPlayers.current.set(p.wallet, p)
+          for (const p of players) latestPlayers.current.set(p.wallet.toLowerCase(), p)
           break
         }
 
         case 'hit_confirm':
           pendingHits.current.push({
-            shooter: msg.shooter as string,
-            target: msg.target as string,
+            shooter: String(msg.shooter).toLowerCase(),
+            target: String(msg.target).toLowerCase(),
             part: msg.part as 'head' | 'body',
             damage: msg.damage as number,
             target_hp: msg.target_hp as number,
@@ -271,7 +271,7 @@ export function useArenaSocket(walletAddress: string) {
           clearStuckTimer()
           clearReconnectRetry()
           const players = (msg.players as PlayerSnapshot[]) ?? []
-          for (const p of players) latestPlayers.current.set(p.wallet, p)
+          for (const p of players) latestPlayers.current.set(p.wallet.toLowerCase(), p)
           dispatch({ t: 'SELF_RECONNECTED', resumed: !!msg.resumed })
           break
         }
