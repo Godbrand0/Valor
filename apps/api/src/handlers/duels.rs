@@ -202,33 +202,73 @@ async fn escrow_stake(
     }
 }
 
+/// `ValorRewardPool.MAX_REWARD`: the most a single `distributeReward` may pay.
+/// Anything above it reverts on-chain, so a bigger payout has to be split.
+const MAX_REWARD_CHUNK_G: u64 = 10_000;
+
+/// Split a payout into pool-sized chunks, each with its own on-chain reference.
+///
+/// A payout that fits in one chunk keeps the plain `ref_key` reference, exactly
+/// as before chunking existed, so a duel settled earlier is still recognised as
+/// paid and can never be paid twice. Larger payouts (a 25k or 50k stake tier)
+/// never succeeded before, so their chunk references are free to be new.
+fn payout_chunks(amount_g: u64, ref_key: &str) -> Vec<(u64, String)> {
+    if amount_g <= MAX_REWARD_CHUNK_G {
+        return vec![(amount_g, ref_key.to_string())];
+    }
+    let mut out = Vec::new();
+    let mut left = amount_g;
+    let mut i = 0;
+    while left > 0 {
+        let take = left.min(MAX_REWARD_CHUNK_G);
+        out.push((take, format!("{ref_key}:chunk:{i}")));
+        left -= take;
+        i += 1;
+    }
+    out
+}
+
 /// Pay `amount_g` out of the RewardPool for `ref_key`, once. The on-chain reference
 /// is the idempotency key: a replayed request finds the ref already used and pays
 /// nothing, which is what makes a retried resolve safe.
+///
+/// Amounts above the pool's per-call cap go out as several transfers, each with
+/// its own reference. If one fails, the ones before it stay paid and a retry pays
+/// only the rest. Returns the last transfer's hash, or None when nothing new was
+/// paid or any chunk failed.
 async fn payout(state: &AppState, wallet: &str, amount_g: u64, ref_key: &str) -> Option<String> {
     let chain = state.chain.as_ref()?;
     let addr: Address = wallet.parse().ok()?;
-    let reference = ethers::utils::keccak256(ref_key.as_bytes());
+    let chunks = payout_chunks(amount_g, ref_key);
+    let total = chunks.len();
+    let mut last_tx: Option<String> = None;
 
-    if chain.reward_ref_used(reference).await.unwrap_or(false) {
-        tracing::info!("duel payout {} already settled on-chain — skipping", ref_key);
-        return None;
-    }
-    match chain.distribute_reward(addr, amount_g, reference).await {
-        Ok(Some(tx)) => {
-            crate::handlers::ledger::insert_ledger_entry(
-                &state.db, wallet, "duel_payout",
-                rust_decimal::Decimal::from(amount_g), Some(&tx), None,
-                crate::services::chain_id::ChainId::Celo,
-            ).await;
-            Some(tx)
+    for (i, (chunk_g, chunk_ref)) in chunks.into_iter().enumerate() {
+        let reference = ethers::utils::keccak256(chunk_ref.as_bytes());
+        if chain.reward_ref_used(reference).await.unwrap_or(false) {
+            tracing::info!("duel payout {} already settled on-chain — skipping", chunk_ref);
+            continue;
         }
-        Ok(None) => None,
-        Err(e) => {
-            tracing::error!("duel payout FAILED for {} ({}): {}", wallet, ref_key, e);
-            None
+        match chain.distribute_reward(addr, chunk_g, reference).await {
+            Ok(Some(tx)) => {
+                crate::handlers::ledger::insert_ledger_entry(
+                    &state.db, wallet, "duel_payout",
+                    rust_decimal::Decimal::from(chunk_g), Some(&tx), None,
+                    crate::services::chain_id::ChainId::Celo,
+                ).await;
+                last_tx = Some(tx);
+            }
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::error!(
+                    "duel payout FAILED for {} ({}, chunk {}/{} of {} G$): {} — re-run to resume",
+                    wallet, ref_key, i + 1, total, amount_g, e,
+                );
+                return None;
+            }
         }
     }
+    last_tx
 }
 
 // ── Settlement ────────────────────────────────────────────────────────────────
@@ -906,6 +946,30 @@ mod tests {
         let mut sorted = STAKE_TIERS;
         sorted.sort_unstable();
         assert_eq!(sorted, STAKE_TIERS, "stake tiers must stay in ascending order");
+    }
+
+    #[test]
+    fn a_payout_within_the_pool_cap_keeps_its_original_reference() {
+        // Duels settled before chunking used the bare ref; changing it would let
+        // a replayed resolve pay them a second time.
+        assert_eq!(payout_chunks(199, "duel:x:w"), vec![(199, "duel:x:w".to_string())]);
+        assert_eq!(payout_chunks(10_000, "duel:x:w"), vec![(10_000, "duel:x:w".to_string())]);
+    }
+
+    #[test]
+    fn every_tier_pays_out_within_the_pool_cap() {
+        // ValorRewardPool reverts any single payout above MAX_REWARD, so a win,
+        // draw or cancel at the top tiers used to strand both stakes in the pool.
+        for tier in STAKE_TIERS {
+            for amount in [winner_payout(tier), tier as u64] {
+                let chunks = payout_chunks(amount, "duel:x:w");
+                assert!(chunks.iter().all(|(g, _)| *g > 0 && *g <= MAX_REWARD_CHUNK_G), "tier {tier}");
+                assert_eq!(chunks.iter().map(|(g, _)| g).sum::<u64>(), amount, "tier {tier}");
+                let refs: std::collections::HashSet<_> = chunks.iter().map(|(_, r)| r).collect();
+                assert_eq!(refs.len(), chunks.len(), "chunk references must be unique");
+            }
+        }
+        assert_eq!(payout_chunks(winner_payout(50_000), "r").len(), 10);
     }
 
     #[test]
