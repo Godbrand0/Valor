@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { notificationsKey } from '@/hooks/useNotifications'
 
 const RECONNECT_DELAY_MS = 3000
 
@@ -44,6 +45,10 @@ export function useChatSocket(walletAddress: string | undefined) {
         let msg: NewMessageEvent
         try { msg = JSON.parse(e.data as string) }
         catch { return }
+        // The bell: refresh it on any notification or message for us.
+        if ((msg as { type: string }).type === 'notification' || msg.type === 'new_message') {
+          void queryClient.invalidateQueries({ queryKey: notificationsKey(walletAddress) })
+        }
         if (msg.type !== 'new_message') return
 
         const me = walletAddress.toLowerCase()

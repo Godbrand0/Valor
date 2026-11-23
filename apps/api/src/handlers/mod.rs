@@ -5,6 +5,7 @@ pub mod identity;
 pub mod battles;
 pub mod missions;
 pub mod items;
+pub mod notifications;
 pub mod decay;
 pub mod duels;
 pub mod friends;
@@ -131,6 +132,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route("/{wallet}/friends/{other}/accept", web::post().to(friends::accept_request))
                 .route("/{wallet}/friends/{other}", web::delete().to(friends::remove_friend))
                 .route("/{wallet}/messages/unread-counts", web::get().to(chat::unread_counts))
+                .route("/{wallet}/notifications", web::get().to(notifications::list))
+                .route("/{wallet}/notifications/seen", web::post().to(notifications::mark_seen))
                 .route("/{wallet}/friends/{other}/messages", web::get().to(chat::list_messages))
                 .route("/{wallet}/friends/{other}/messages", web::post().to(chat::send_message))
                 .route("/{wallet}/friends/{other}/messages/read", web::post().to(chat::mark_read)),

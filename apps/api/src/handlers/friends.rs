@@ -162,7 +162,7 @@ pub async fn send_request(
             Ok(_) => {
                 // `target` was the original requester — they're the one who should
                 // hear that their pending request just got a yes.
-                notify(&state, target.wallet.clone(), format!("{requester_name} accepted your friend request"), "/friends");
+                notify(&state, target.wallet.clone(), "friend", format!("{requester_name} accepted your friend request"), "/friends");
                 HttpResponse::Ok().json(json!({"status": "accepted", "auto_accepted": true}))
             }
             Err(e) => {
@@ -185,7 +185,7 @@ pub async fn send_request(
 
     match inserted {
         Ok(_) => {
-            notify(&state, target.wallet.clone(), format!("{requester_name} sent you a friend request"), "/friends");
+            notify(&state, target.wallet.clone(), "friend", format!("{requester_name} sent you a friend request"), "/friends");
             HttpResponse::Ok().json(json!({"status": "pending", "to": target.wallet}))
         }
         Err(e) => {
@@ -224,7 +224,7 @@ pub async fn accept_request(
     match updated {
         Ok(r) if r.rows_affected() > 0 => {
             let accepter_name = display_name(&state.db, &wallet).await.unwrap_or_else(|| "A player".into());
-            notify(&state, other.clone(), format!("{accepter_name} accepted your friend request"), "/friends");
+            notify(&state, other.clone(), "friend", format!("{accepter_name} accepted your friend request"), "/friends");
             HttpResponse::Ok().json(json!({"status": "accepted"}))
         }
         Ok(_) => HttpResponse::NotFound().json(json!({"error": "No pending request from that player"})),

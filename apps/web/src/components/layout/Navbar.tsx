@@ -9,6 +9,7 @@ import { useGBalance } from '@/hooks/useGBalance'
 import { CLASS_DEFINITIONS } from '@/lib/classes'
 import { useAudio } from '@/hooks/useAudio'
 import { Volume2, VolumeX, HelpCircle } from 'lucide-react'
+import { NotificationBell } from './NotificationBell'
 
 function AudioToggle() {
   const { muted, toggleMute } = useAudio()
@@ -28,7 +29,6 @@ function AudioToggle() {
 const NAV_LINKS = [
   { to: '/',            label: 'Home',    exact: true  },
   { to: '/battle',      label: 'Fight',   exact: false },
-  { to: '/multiplayer', label: 'Multiplayer', exact: false },
   { to: '/profile',     label: 'Profile', exact: false },
   { to: '/marketplace', label: 'Market',  exact: false },
   { to: '/leaderboard', label: 'Ranks',   exact: false },
@@ -150,6 +150,7 @@ export default function Navbar() {
             </Link>
           )}
 
+          <NotificationBell wallet={address} accent={classDef?.accentColor ?? '#eab308'} />
           <Link
             href="/help"
             title="Help Center"

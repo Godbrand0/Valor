@@ -14,3 +14,4 @@ pub mod coop_server;
 pub mod push;
 pub mod chat_hub;
 pub mod scheduler;
+pub mod notifications;
