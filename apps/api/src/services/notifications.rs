@@ -57,6 +57,7 @@ pub fn for_ledger(category: &str, amount: Decimal) -> Option<(&'static str, Stri
         "referral_reward" => ("money", format!("+{g} G$ referral reward"), "Someone you invited joined Valor.".to_string(), "/profile"),
         "referral_campaign_reward" => ("money", format!("+{g} G$ campaign reward"), "Your referral campaign reward has been paid.".to_string(), "/profile"),
         "duel_payout" => ("money", format!("+{g} G$ duel winnings"), "Your duel was settled in your favour.".to_string(), "/multiplayer"),
+        "duel_refund" => ("transaction", format!("+{g} G$ stake refunded"), "Your duel stake was refunded.".to_string(), "/multiplayer"),
         "challenge_reward" => ("money", format!("+{g} G$ challenge reward"), "A challenge reward has been paid to you.".to_string(), "/profile"),
         "ubi_claim" => ("transaction", format!("Daily claim: +{g} G$"), "Your daily G$ claim went through.".to_string(), "/profile"),
         "marketplace_purchase" => ("transaction", "Purchase complete".to_string(), format!("{g} G$ spent in the Market."), "/marketplace"),

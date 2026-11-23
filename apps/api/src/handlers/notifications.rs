@@ -82,7 +82,10 @@ pub async fn list(req: HttpRequest, state: web::Data<AppState>, path: web::Path<
         });
     }
 
-    // Daily G$ claim ready — "new" from the moment it became claimable.
+    // Daily G$ claim ready — "new" from the moment it became claimable. A player
+    // who has never claimed has had it ready since they signed up, not since
+    // "now" — using `now` here would make the item permanently unread, since
+    // every poll would push its created_at past the last seen_at.
     let last_claim: Option<DateTime<Utc>> = sqlx::query_scalar(
         "SELECT last_claimed_at FROM daily_claims WHERE wallet_address = $1",
     )
@@ -90,7 +93,14 @@ pub async fn list(req: HttpRequest, state: web::Data<AppState>, path: web::Path<
     .fetch_optional(db)
     .await
     .unwrap_or(None);
-    let ready_at = last_claim.map(|t| t + Duration::hours(24));
+    let ready_at = match last_claim {
+        Some(t) => Some(t + Duration::hours(24)),
+        None => sqlx::query_scalar("SELECT created_at FROM players WHERE wallet_address = $1")
+            .bind(&wallet)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None),
+    };
     if ready_at.map_or(true, |t| now >= t) {
         let at = ready_at.unwrap_or(now);
         items.push(FeedItem {

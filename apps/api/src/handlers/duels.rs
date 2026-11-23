@@ -236,7 +236,7 @@ fn payout_chunks(amount_g: u64, ref_key: &str) -> Vec<(u64, String)> {
 /// its own reference. If one fails, the ones before it stay paid and a retry pays
 /// only the rest. Returns the last transfer's hash, or None when nothing new was
 /// paid or any chunk failed.
-async fn payout(state: &AppState, wallet: &str, amount_g: u64, ref_key: &str) -> Option<String> {
+async fn payout(state: &AppState, wallet: &str, amount_g: u64, ref_key: &str, category: &str) -> Option<String> {
     let chain = state.chain.as_ref()?;
     let addr: Address = wallet.parse().ok()?;
     let chunks = payout_chunks(amount_g, ref_key);
@@ -252,7 +252,7 @@ async fn payout(state: &AppState, wallet: &str, amount_g: u64, ref_key: &str) ->
         match chain.distribute_reward(addr, chunk_g, reference).await {
             Ok(Some(tx)) => {
                 crate::handlers::ledger::insert_ledger_entry(
-                    &state.db, wallet, "duel_payout",
+                    &state.db, wallet, category,
                     rust_decimal::Decimal::from(chunk_g), Some(&tx), None,
                     crate::services::chain_id::ChainId::Celo,
                 ).await;
@@ -279,7 +279,7 @@ async fn payout(state: &AppState, wallet: &str, amount_g: u64, ref_key: &str) ->
 /// Pay the winner. Returns the settlement tx hash.
 async fn settle_win(state: &AppState, duel_id: Uuid, winner: &str, stake: i64) -> Option<String> {
     let take = winner_payout(stake);
-    payout(state, winner, take, &format!("duel:{duel_id}:{winner}")).await
+    payout(state, winner, take, &format!("duel:{duel_id}:{winner}"), "duel_payout").await
 }
 
 /// Refund both sides of a drawn duel.
@@ -290,14 +290,14 @@ async fn settle_draw(
     opponent: &str,
     stake: i64,
 ) -> Vec<Option<String>> {
-    let a = payout(state, challenger, stake as u64, &format!("duel:{duel_id}:draw:{challenger}")).await;
-    let b = payout(state, opponent, stake as u64, &format!("duel:{duel_id}:draw:{opponent}")).await;
+    let a = payout(state, challenger, stake as u64, &format!("duel:{duel_id}:draw:{challenger}"), "duel_refund").await;
+    let b = payout(state, opponent, stake as u64, &format!("duel:{duel_id}:draw:{opponent}"), "duel_refund").await;
     vec![a, b]
 }
 
 /// Refund a cancelled duel's stake to the challenger.
 async fn settle_cancel(state: &AppState, duel_id: Uuid, challenger: &str, stake: i64) -> Option<String> {
-    payout(state, challenger, stake as u64, &format!("duel:{duel_id}:cancel")).await
+    payout(state, challenger, stake as u64, &format!("duel:{duel_id}:cancel"), "duel_refund").await
 }
 
 /// Resolve a `face_off` duel once a live match has ended. Called by the arena
@@ -558,7 +558,7 @@ pub async fn accept_duel(
     if !won_race {
         tracing::warn!("duel {} accept race lost by {} — refunding", id, wallet);
         let refunded =
-            payout(&state, &wallet, duel.stake_g as u64, &format!("duel_refund:{stake_tx}")).await;
+            payout(&state, &wallet, duel.stake_g as u64, &format!("duel_refund:{stake_tx}"), "duel_refund").await;
         return HttpResponse::Conflict().json(json!({
             "error": "Someone accepted first — your stake was refunded",
             "refund_tx": refunded,
@@ -1038,10 +1038,11 @@ pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
                     "UPDATE duels SET status = 'cancelled', resolved_at = now() WHERE id = $1 AND status = 'open'",
                 ).bind(d.id).execute(&state.db).await;
                 if claimed.map(|r| r.rows_affected()).unwrap_or(0) != 1 { continue; }
+                // settle_cancel's payout already puts the refund in the bell/push
+                // (the "duel_refund" ledger category) — no separate notify() here,
+                // or the challenger would see the same refund twice.
                 let tx = settle_cancel(state, d.id, &d.challenger_wallet, d.stake_g).await;
                 tracing::info!("duel {} expired unaccepted — refunded {} G$ to {} (tx {:?})", d.id, d.stake_g, d.challenger_wallet, tx);
-                notify(state, d.challenger_wallet.clone(), "duel",
-                    format!("Nobody took your {} G$ duel in time — your stake is back in your wallet", d.stake_g), "/duels");
                 refunded += 1;
             }
             ExpiryOutcome::Resolve => {
@@ -1068,8 +1069,9 @@ pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
                 let _ = sqlx::query("UPDATE duels SET payout_tx = $1 WHERE id = $2")
                     .bind(&tx).bind(d.id).execute(&state.db).await;
                 tracing::info!("duel {} forfeited by {} (no score) — {} paid {} G$ (tx {:?})", d.id, loser, winner, winner_payout(d.stake_g), tx);
-                notify(state, winner.clone(), "duel",
-                    format!("Your opponent never finished their run — you win {} G$", winner_payout(d.stake_g)), "/duels");
+                // The winner's payout already notifies them via the ledger (the
+                // "duel_payout" category) — only the loser, who gets no payout,
+                // needs an explicit notify() here.
                 notify(state, loser, "duel",
                     format!("Your duel run was never submitted, so the {} G$ duel went to your opponent", d.stake_g), "/duels");
                 forfeited += 1;
@@ -1093,9 +1095,9 @@ pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
                     let txs = settle_draw(state, d.id, &d.challenger_wallet, &opponent, d.stake_g).await;
                     tracing::info!("duel {} expired with no scores — both refunded {} G$ (txs {:?})", d.id, d.stake_g, txs);
                 }
-                for w in [d.challenger_wallet.clone(), opponent] {
-                    notify(state, w, "duel", format!("Your {} G$ duel was never played — your stake is back in your wallet", d.stake_g), "/duels");
-                }
+                // Both sides' refunds already notify via the ledger ("duel_refund"),
+                // whether paid directly above or by resolve_live_duel's settle_draw —
+                // no separate notify() here, or each side sees the refund twice.
                 voided += 1;
             }
         }
