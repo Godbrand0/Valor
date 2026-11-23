@@ -62,11 +62,16 @@ pub async fn live(state: web::Data<AppState>) -> HttpResponse {
 
     let matches: Vec<arena_server::LiveMatch> = ask(|reply| {
         state.arena_server.tx.send(arena_server::ServerMsg::LiveSnapshot { reply }).is_ok()
-    }).await.unwrap_or_default();
+    }).await.unwrap_or_default().into_iter().filter(|m| {
+        !m.wallets.iter().any(|w| fraud_blocklist::is_blocked_str(&normalize_wallet(w)))
+    }).collect();
 
     let parties: Vec<coop_server::LiveParty> = ask(|reply| {
         state.coop_server.tx.send(coop_server::ServerMsg::LiveSnapshot { reply }).is_ok()
-    }).await.unwrap_or_default();
+    }).await.unwrap_or_default().into_iter().filter(|p| {
+        !fraud_blocklist::is_blocked_str(&normalize_wallet(&p.host_wallet))
+            && !p.members.iter().any(|w| fraud_blocklist::is_blocked_str(&normalize_wallet(w)))
+    }).collect();
 
     // Everyone we need a name for, in one query.
     let mut wallets: HashSet<String> = online.iter().cloned().collect();
