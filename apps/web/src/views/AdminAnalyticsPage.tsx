@@ -241,7 +241,7 @@ export default function AdminAnalyticsPage() {
               <Stat label="G$ moved" count={tot('gMoved')} format={(v) => compact(v)} unit="G$" sub="in + out, team wallets excluded" />
               <Stat label="G$ spent in app" count={tot('gSpentInApp')} format={(v) => compact(v)} unit="G$" sub="players into Valor contracts" />
               <Stat label="Spent in marketplace" count={tot('gSpentMarketplace')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('marketplacePurchases'))} purchases`} />
-              <Stat label="Rewards paid out" count={tot('rewardsPaid')} format={(v) => compact(v)} unit="G$" sub="from both reward pools" />
+              <Stat label="Rewards paid out" count={tot('rewardsPaid')} format={(v) => compact(v)} unit="G$" sub="from both reward pools, duel prizes excluded" />
             </div>
             <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1 mt-2">Revenue to Valor</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -249,6 +249,13 @@ export default function AdminAnalyticsPage() {
               <Stat label="Marketplace" count={tot('marketplaceRevenue')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('marketplaceRevenueWithdrawn'))} withdrawn from the contract`} />
               <Stat label="Withdrawal fees" count={tot('withdrawFeeRevenue')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('withdrawalsCharged'))} withdrawals, paid to the treasury`} />
               <Stat label="Duel house cut" count={tot('duelCutRevenue')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('duelWins'))} duel wins, kept in the main pool`} />
+            </div>
+            <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-slate-500 -mb-1 mt-2">Duel stakes</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat label="Staked" count={tot('duelStaked')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('duelStakes'))} stakes, Face-Off and wave race`} />
+              <Stat label="Paid to winners" count={tot('duelPaidToWinners')} format={(v) => compact(v)} unit="G$" sub={`${n(tot('duelWins'))} wins`} />
+              <Stat label="Refunded" count={tot('duelRefunded')} format={(v) => compact(v)} unit="G$" sub="draws, cancels, lost accept races" />
+              <Stat label="Still held in the pool" count={tot('duelUnsettled')} format={(v) => compact(v)} unit="G$" sub="open challenges and unresolved duels" />
             </div>
           </section>
 
