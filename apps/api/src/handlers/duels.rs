@@ -904,6 +904,209 @@ pub async fn void_duel(
     }
 }
 
+// ── Expiry sweep (scheduler) ─────────────────────────────────────────────────
+//
+// Nothing else ever settles a duel that stalls, so without this a stake can sit in
+// the pool forever: a challenge nobody accepts, a wave race where a player never
+// submits, a Face-Off whose players never show up. Every path below reuses the
+// normal settlement rails, so references, idempotency and the house cut are the
+// same as a duel that finished on its own.
+
+/// Hours an open challenge waits for an opponent before its stake is refunded.
+fn open_ttl_hours() -> i64 {
+    std::env::var("DUEL_OPEN_TTL_HOURS").ok().and_then(|v| v.parse().ok()).unwrap_or(72)
+}
+
+/// Hours an accepted Face-Off may go unplayed before it is voided as a draw.
+fn face_off_ttl_hours() -> i64 {
+    std::env::var("DUEL_FACEOFF_TTL_HOURS").ok().and_then(|v| v.parse().ok()).unwrap_or(24)
+}
+
+/// Slack past the longest legal run before a missing wave-race score is final, so
+/// a score submitted in the last seconds of a run is never beaten by the sweep.
+const RUN_GRACE_SECS: i64 = 10 * 60;
+
+/// How many stalled duels one sweep settles. Each costs one or more chain txs, so
+/// a backlog drains over a few ticks instead of in one burst.
+const SWEEP_BATCH: i64 = 25;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Side { Challenger, Opponent }
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExpiryOutcome {
+    /// Open and stale: cancel and refund the challenger.
+    RefundChallenger,
+    /// Accepted wave race where only one side ever scored: that side wins.
+    Forfeit(Side),
+    /// Accepted and nobody can finish it: refund both, no cut.
+    RefundBoth,
+    /// Both scores are in but resolution never ran (a crash between the two).
+    Resolve,
+}
+
+/// What, if anything, should happen to a duel now. Pure, so the rules are testable.
+fn expiry_outcome(
+    mode: &str,
+    status: &str,
+    created_at: DateTime<Utc>,
+    accepted_at: Option<DateTime<Utc>>,
+    challenger_score: Option<i32>,
+    opponent_score: Option<i32>,
+    now: DateTime<Utc>,
+) -> Option<ExpiryOutcome> {
+    let run_over = |start: DateTime<Utc>| (now - start).num_seconds() > MAX_RUN_SECS as i64 + RUN_GRACE_SECS;
+    match status {
+        "open" => {
+            let stale = (now - created_at).num_hours() >= open_ttl_hours();
+            // A wave-race challenger whose own run ended without a score can no
+            // longer win, so waiting for an opponent would only hand them a free pot.
+            let dead_run = mode == "wave_race" && challenger_score.is_none() && run_over(created_at);
+            (stale || dead_run).then_some(ExpiryOutcome::RefundChallenger)
+        }
+        "accepted" if mode == "wave_race" => {
+            // The challenger's run started at creation, the opponent's at acceptance,
+            // so once the later one is over no new score can ever arrive.
+            let accepted = accepted_at.unwrap_or(created_at);
+            match (challenger_score, opponent_score) {
+                (Some(_), Some(_)) => Some(ExpiryOutcome::Resolve),
+                _ if !run_over(accepted) => None,
+                (Some(_), None) => Some(ExpiryOutcome::Forfeit(Side::Challenger)),
+                (None, Some(_)) => Some(ExpiryOutcome::Forfeit(Side::Opponent)),
+                (None, None) => Some(ExpiryOutcome::RefundBoth),
+            }
+        }
+        "accepted" if mode == "face_off" => {
+            let accepted = accepted_at.unwrap_or(created_at);
+            ((now - accepted).num_hours() >= face_off_ttl_hours()).then_some(ExpiryOutcome::RefundBoth)
+        }
+        _ => None,
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct StalledDuel {
+    id: Uuid,
+    mode: String,
+    status: String,
+    challenger_wallet: String,
+    opponent_wallet: Option<String>,
+    stake_g: i64,
+    challenger_score: Option<i32>,
+    opponent_score: Option<i32>,
+    created_at: DateTime<Utc>,
+    accepted_at: Option<DateTime<Utc>>,
+}
+
+/// Duel ids with a Face-Off match being fought right now, or None if the arena
+/// did not answer (then Face-Offs are skipped this tick rather than risk voiding
+/// a live fight).
+async fn live_face_off_ids(state: &AppState) -> Option<std::collections::HashSet<Uuid>> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    state.arena_server.tx
+        .send(crate::services::arena_server::ServerMsg::LiveSnapshot { reply })
+        .ok()?;
+    let live = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await.ok()?.ok()?;
+    Some(live.into_iter().map(|m| m.duel_id).collect())
+}
+
+/// Settle every duel that has stalled past its deadline. Idempotent: each claim is
+/// a conditional status flip, and each payout carries the same on-chain reference
+/// a normal settlement would, so a re-run or a racing request cannot pay twice.
+pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
+    let rows: Vec<StalledDuel> = sqlx::query_as(
+        "SELECT id, mode, status, challenger_wallet, opponent_wallet, stake_g,
+                challenger_score, opponent_score, created_at, accepted_at
+         FROM duels WHERE status IN ('open', 'accepted')
+         ORDER BY created_at",
+    )
+    .fetch_all(&state.db).await.unwrap_or_default();
+
+    let now = Utc::now();
+    let mut live: Option<Option<std::collections::HashSet<Uuid>>> = None;
+    let (mut refunded, mut forfeited, mut voided, mut resolved, mut skipped) = (0, 0, 0, 0, 0);
+
+    for d in rows {
+        if refunded + forfeited + voided + resolved >= SWEEP_BATCH { break; }
+        let Some(outcome) = expiry_outcome(
+            &d.mode, &d.status, d.created_at, d.accepted_at, d.challenger_score, d.opponent_score, now,
+        ) else { continue };
+
+        match outcome {
+            ExpiryOutcome::RefundChallenger => {
+                let claimed = sqlx::query(
+                    "UPDATE duels SET status = 'cancelled', resolved_at = now() WHERE id = $1 AND status = 'open'",
+                ).bind(d.id).execute(&state.db).await;
+                if claimed.map(|r| r.rows_affected()).unwrap_or(0) != 1 { continue; }
+                let tx = settle_cancel(state, d.id, &d.challenger_wallet, d.stake_g).await;
+                tracing::info!("duel {} expired unaccepted — refunded {} G$ to {} (tx {:?})", d.id, d.stake_g, d.challenger_wallet, tx);
+                notify(state, d.challenger_wallet.clone(),
+                    format!("Nobody took your {} G$ duel in time — your stake is back in your wallet", d.stake_g), "/duels");
+                refunded += 1;
+            }
+            ExpiryOutcome::Resolve => {
+                let _ = resolve_if_complete(state, d.id).await;
+                resolved += 1;
+            }
+            ExpiryOutcome::Forfeit(side) => {
+                let Some(opponent) = d.opponent_wallet.clone() else { continue };
+                let (winner, loser) = match side {
+                    Side::Challenger => (d.challenger_wallet.clone(), opponent),
+                    Side::Opponent => (opponent, d.challenger_wallet.clone()),
+                };
+                // Conditional on the scores being exactly what we judged, so a score
+                // that lands between the read and here cannot be overruled.
+                let claimed = sqlx::query(
+                    "UPDATE duels SET status = 'resolved', resolved_at = now(), winner_wallet = $2
+                     WHERE id = $1 AND status = 'accepted'
+                       AND challenger_score IS NOT DISTINCT FROM $3 AND opponent_score IS NOT DISTINCT FROM $4",
+                )
+                .bind(d.id).bind(&winner).bind(d.challenger_score).bind(d.opponent_score)
+                .execute(&state.db).await;
+                if claimed.map(|r| r.rows_affected()).unwrap_or(0) != 1 { continue; }
+                let tx = settle_win(state, d.id, &winner, d.stake_g).await;
+                let _ = sqlx::query("UPDATE duels SET payout_tx = $1 WHERE id = $2")
+                    .bind(&tx).bind(d.id).execute(&state.db).await;
+                tracing::info!("duel {} forfeited by {} (no score) — {} paid {} G$ (tx {:?})", d.id, loser, winner, winner_payout(d.stake_g), tx);
+                notify(state, winner.clone(),
+                    format!("Your opponent never finished their run — you win {} G$", winner_payout(d.stake_g)), "/duels");
+                notify(state, loser,
+                    format!("Your duel run was never submitted, so the {} G$ duel went to your opponent", d.stake_g), "/duels");
+                forfeited += 1;
+            }
+            ExpiryOutcome::RefundBoth => {
+                let Some(opponent) = d.opponent_wallet.clone() else { continue };
+                if d.mode == "face_off" {
+                    if live.is_none() { live = Some(live_face_off_ids(state).await); }
+                    match live.as_ref().and_then(|l| l.as_ref()) {
+                        Some(ids) if !ids.contains(&d.id) => {}
+                        _ => { skipped += 1; continue; }
+                    }
+                    // Same path as the admin void: a draw, both stakes back, no cut.
+                    if resolve_live_duel(state, d.id, None).await.is_err() { continue; }
+                } else {
+                    let claimed = sqlx::query(
+                        "UPDATE duels SET status = 'resolved', resolved_at = now()
+                         WHERE id = $1 AND status = 'accepted' AND challenger_score IS NULL AND opponent_score IS NULL",
+                    ).bind(d.id).execute(&state.db).await;
+                    if claimed.map(|r| r.rows_affected()).unwrap_or(0) != 1 { continue; }
+                    let txs = settle_draw(state, d.id, &d.challenger_wallet, &opponent, d.stake_g).await;
+                    tracing::info!("duel {} expired with no scores — both refunded {} G$ (txs {:?})", d.id, d.stake_g, txs);
+                }
+                for w in [d.challenger_wallet.clone(), opponent] {
+                    notify(state, w, format!("Your {} G$ duel was never played — your stake is back in your wallet", d.stake_g), "/duels");
+                }
+                voided += 1;
+            }
+        }
+    }
+
+    json!({
+        "refunded_open": refunded, "forfeited": forfeited, "voided_unplayed": voided,
+        "resolved_stuck": resolved, "skipped_live": skipped,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +1149,47 @@ mod tests {
         let mut sorted = STAKE_TIERS;
         sorted.sort_unstable();
         assert_eq!(sorted, STAKE_TIERS, "stake tiers must stay in ascending order");
+    }
+
+    fn at(h: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(1_800_000_000, 0).unwrap() + chrono::Duration::hours(h)
+    }
+
+    #[test]
+    fn an_open_challenge_is_refunded_only_once_stale() {
+        assert_eq!(expiry_outcome("face_off", "open", at(0), None, None, None, at(71)), None);
+        assert_eq!(expiry_outcome("face_off", "open", at(0), None, None, None, at(72)), Some(ExpiryOutcome::RefundChallenger));
+    }
+
+    #[test]
+    fn an_open_wave_race_whose_challenger_never_scored_is_refunded_after_the_run() {
+        assert_eq!(expiry_outcome("wave_race", "open", at(0), None, None, None, at(1)), None);
+        assert_eq!(expiry_outcome("wave_race", "open", at(0), None, None, None, at(3)), Some(ExpiryOutcome::RefundChallenger));
+        // A challenger who did score keeps waiting for an opponent until the TTL.
+        assert_eq!(expiry_outcome("wave_race", "open", at(0), None, Some(900), None, at(3)), None);
+    }
+
+    #[test]
+    fn a_wave_race_missing_a_score_forfeits_only_after_every_run_is_over() {
+        let acc = Some(at(10));
+        assert_eq!(expiry_outcome("wave_race", "accepted", at(0), acc, Some(5), None, at(11)), None);
+        assert_eq!(expiry_outcome("wave_race", "accepted", at(0), acc, Some(5), None, at(13)), Some(ExpiryOutcome::Forfeit(Side::Challenger)));
+        assert_eq!(expiry_outcome("wave_race", "accepted", at(0), acc, None, Some(5), at(13)), Some(ExpiryOutcome::Forfeit(Side::Opponent)));
+        assert_eq!(expiry_outcome("wave_race", "accepted", at(0), acc, None, None, at(13)), Some(ExpiryOutcome::RefundBoth));
+        assert_eq!(expiry_outcome("wave_race", "accepted", at(0), acc, Some(5), Some(6), at(10)), Some(ExpiryOutcome::Resolve));
+    }
+
+    #[test]
+    fn an_unplayed_face_off_is_voided_after_its_ttl() {
+        assert_eq!(expiry_outcome("face_off", "accepted", at(0), Some(at(1)), None, None, at(24)), None);
+        assert_eq!(expiry_outcome("face_off", "accepted", at(0), Some(at(1)), None, None, at(25)), Some(ExpiryOutcome::RefundBoth));
+    }
+
+    #[test]
+    fn finished_duels_are_never_touched() {
+        for status in ["resolved", "cancelled"] {
+            assert_eq!(expiry_outcome("wave_race", status, at(0), Some(at(0)), None, None, at(1000)), None);
+        }
     }
 
     #[test]

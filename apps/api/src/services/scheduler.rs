@@ -16,7 +16,7 @@
 
 use crate::AppState;
 
-/// Spawns the four sweeps as independent background tasks. Unconditional — this is
+/// Spawns the sweeps as independent background tasks. Unconditional — this is
 /// internal application logic, not an external integration, so there's no env var
 /// to gate it on.
 pub fn spawn(state: AppState) {
@@ -38,6 +38,13 @@ pub fn spawn(state: AppState) {
         Box::pin(async move {
             let result = crate::handlers::consistency::run_consistency_check_inner(&state).await;
             tracing::debug!("scheduled consistency check: {}", result);
+        })
+    });
+
+    spawn_interval("duel-expiry", state.clone(), std::time::Duration::from_secs(15 * 60), |state| {
+        Box::pin(async move {
+            let result = crate::handlers::duels::run_expiry_sweep_inner(&state).await;
+            tracing::info!("scheduled duel expiry sweep: {}", result);
         })
     });
 
