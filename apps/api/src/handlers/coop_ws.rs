@@ -107,7 +107,7 @@ pub async fn coop_ws(
                         }
                         ClientMsg::Leave => {
                             if let Some(ref w) = wallet {
-                                let _ = server_tx.send(ServerMsg::Leave { wallet: w.clone() });
+                                let _ = server_tx.send(ServerMsg::Leave { wallet: w.clone(), deliberate: true });
                             }
                         }
                     }
@@ -120,7 +120,7 @@ pub async fn coop_ws(
                 Message::Close(reason) => {
                     tracing::info!("coop_ws: close frame from {:?} ({:?})", wallet, reason);
                     if let Some(ref w) = wallet {
-                        let _ = server_tx.send(ServerMsg::Leave { wallet: w.clone() });
+                        let _ = server_tx.send(ServerMsg::Leave { wallet: w.clone(), deliberate: false });
                     }
                     let _ = session.close(reason).await;
                     break;
@@ -132,7 +132,7 @@ pub async fn coop_ws(
 
         tracing::info!("coop_ws: stream ended for {:?} (no close frame)", wallet);
         if let Some(w) = wallet {
-            let _ = server_tx.send(ServerMsg::Leave { wallet: w });
+            let _ = server_tx.send(ServerMsg::Leave { wallet: w, deliberate: false });
         }
     });
 
