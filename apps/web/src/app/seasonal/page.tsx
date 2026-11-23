@@ -17,6 +17,7 @@ import { AnimatePresence } from 'framer-motion';
 import LoadoutModal from '@/components/battle/LoadoutModal';
 import { Rajdhani } from 'next/font/google';
 import LoadingScreen from '@/components/ui/LoadingScreen';
+import Redirect from '@/components/ui/Redirect';
 
 // The tactical HUD face, same as /fight — exposed as a CSS var for the scene.
 const tactical = Rajdhani({
@@ -118,7 +119,7 @@ export default function SeasonalPage() {
   // for "logged out" and bounces the player to the landing page. Same guard as
   // BattlePage/FriendsPage/DuelsPage/ChatThreadPage/EndlessPage.
   if (status === 'loading') return <LoadingScreen />;
-  if (status === 'unauthenticated') { router.replace('/'); return null; }
+  if (status === 'unauthenticated') return <Redirect to="/" />
   if (!player && !playerSynced) return <LoadingScreen />;
   if (!player) {
     router.replace('/');

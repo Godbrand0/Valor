@@ -252,9 +252,11 @@ export function useCoopSocket(walletAddress: string) {
   const openSocketRef = useRef<(onOpenMsg: Record<string, unknown>, isReconnectAttempt?: boolean) => void>(() => {})
   openSocketRef.current = openSocket
 
-  const createParty = useCallback((name: string) => {
+  /** `isPublic` lists the party (with its code) in the multiplayer lobby so
+   *  anyone online can join; private parties stay invite-only. */
+  const createParty = useCallback((name: string, isPublic = false) => {
     lastJoinRef.current = null // nothing to reconnect into as the host — see this hook's module doc
-    openSocket({ type: 'create_party', wallet: walletAddress, name })
+    openSocket({ type: 'create_party', wallet: walletAddress, name, public: isPublic })
   }, [walletAddress, openSocket])
 
   const joinParty = useCallback((code: string, name: string) => {

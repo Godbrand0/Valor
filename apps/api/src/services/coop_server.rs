@@ -47,7 +47,9 @@ impl CoopServerHandle {
 // ── Messages flowing into the co-op server task ───────────────────────────────
 
 pub enum ServerMsg {
-    CreateParty { wallet: String, name: String, tx: UnboundedSender<String> },
+    /// `public` lists the party (and its join code) in the multiplayer lobby so
+    /// anyone online can hop in; private parties are code/link-only as before.
+    CreateParty { wallet: String, name: String, tx: UnboundedSender<String>, public: bool },
     JoinParty { code: String, wallet: String, name: String, tx: UnboundedSender<String> },
     /// Host-only; the server silently ignores this from anyone else —
     /// defense in depth, the client UI never shows the button to a non-host
@@ -66,6 +68,21 @@ pub enum ServerMsg {
     /// telling everyone the moment happened.
     WaveCleared { wallet: String, wave: u32 },
     Leave { wallet: String },
+    /// Read-only: every party right now, for the multiplayer lobby.
+    LiveSnapshot { reply: tokio::sync::oneshot::Sender<Vec<LiveParty>> },
+}
+
+/// One party as the lobby sees it. `code` is only ever filled for a PUBLIC
+/// party: a private party's members still show as "in a party", but its code
+/// never leaves this server, so nobody can join it without being invited.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LiveParty {
+    pub code: Option<String>,
+    pub public: bool,
+    pub host_wallet: String,
+    pub members: Vec<String>,
+    pub started: bool,
+    pub max_size: usize,
 }
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -87,6 +104,8 @@ struct CoopParty {
     /// byte-identical layouts on their own.
     seed: u32,
     started: bool,
+    /// Listed in the multiplayer lobby with its code (see `LiveParty`).
+    public: bool,
 }
 
 /// No ambiguous characters (0/O, 1/I/L) — this gets read aloud/typed by
@@ -128,19 +147,45 @@ impl CoopServer {
 
     fn handle(&mut self, msg: ServerMsg) {
         match msg {
-            ServerMsg::CreateParty { wallet, name, tx } => self.on_create_party(wallet, name, tx),
+            ServerMsg::CreateParty { wallet, name, tx, public } => self.on_create_party_with(wallet, name, tx, public),
             ServerMsg::JoinParty { code, wallet, name, tx } => self.on_join_party(code, wallet, name, tx),
             ServerMsg::StartRun { wallet } => self.on_start_run(&wallet),
             ServerMsg::HostState { wallet, snapshot } => self.on_host_state(&wallet, snapshot),
             ServerMsg::RemoteInput { wallet, payload } => self.on_remote_input(&wallet, payload),
             ServerMsg::WaveCleared { wallet, wave } => self.on_wave_cleared(&wallet, wave),
             ServerMsg::Leave { wallet } => self.on_leave(&wallet),
+            ServerMsg::LiveSnapshot { reply } => { let _ = reply.send(self.live_snapshot()); }
         }
+    }
+
+    fn live_snapshot(&self) -> Vec<LiveParty> {
+        let mut out: Vec<LiveParty> = self.parties.iter().map(|(code, p)| {
+            let mut members: Vec<String> = p.members.keys().cloned().collect();
+            members.sort();
+            LiveParty {
+                code: p.public.then(|| code.clone()),
+                public: p.public,
+                host_wallet: p.host_wallet.clone(),
+                members,
+                started: p.started,
+                max_size: MAX_PARTY_SIZE,
+            }
+        }).collect();
+        // Joinable first: public lobbies with room, then everything else.
+        out.sort_by_key(|p| !(p.public && !p.started && p.members.len() < p.max_size));
+        out
     }
 
     // ── Party formation ────────────────────────────────────────────────────────
 
+    /// Private party — the original code/link-only behaviour. Kept as the
+    /// short form the existing tests call; production goes through `_with`.
+    #[cfg(test)]
     fn on_create_party(&mut self, wallet: String, name: String, tx: UnboundedSender<String>) {
+        self.on_create_party_with(wallet, name, tx, false)
+    }
+
+    fn on_create_party_with(&mut self, wallet: String, name: String, tx: UnboundedSender<String>, public: bool) {
         // A stray double-create (double-tap, a reconnect racing a fresh
         // create) — drop them from whatever party they were already in
         // first, same "don't double-seat" instinct `arena_server.rs`'s
@@ -164,11 +209,12 @@ impl CoopServer {
             members,
             seed,
             started: false,
+            public,
         });
         self.player_party.insert(wallet.clone(), code.clone());
 
         tracing::info!("coop: {} created party {}", wallet, code);
-        send(&tx, json!({ "type": "party_created", "code": code, "seed": seed }).to_string());
+        send(&tx, json!({ "type": "party_created", "code": code, "seed": seed, "public": public }).to_string());
     }
 
     fn on_join_party(&mut self, code: String, wallet: String, name: String, tx: UnboundedSender<String>) {
@@ -635,5 +681,24 @@ mod tests {
 
         assert!(!server.parties.contains_key(&code1), "the abandoned party is cleaned up");
         assert_eq!(server.parties.len(), 1);
+    }
+
+    #[test]
+    fn lobby_snapshot_hides_private_codes_and_lists_public_ones() {
+        let mut server = CoopServer::new();
+        let (ptx, _prx) = mpsc::unbounded_channel();
+        let (qtx, _qrx) = mpsc::unbounded_channel();
+        server.on_create_party("0xPRIV".into(), "Private".into(), ptx);
+        server.on_create_party_with("0xPUB".into(), "Public".into(), qtx, true);
+        let snap = server.live_snapshot();
+        assert_eq!(snap.len(), 2);
+        // Joinable public party sorts first, with its code.
+        assert!(snap[0].public);
+        assert_eq!(snap[0].host_wallet, "0xPUB");
+        assert!(snap[0].code.is_some());
+        // Private party is visible as a party, but its code never leaves.
+        assert!(!snap[1].public);
+        assert_eq!(snap[1].host_wallet, "0xPRIV");
+        assert!(snap[1].code.is_none());
     }
 }

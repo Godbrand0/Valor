@@ -28,6 +28,7 @@ pub mod push;
 pub mod ambassadors;
 pub mod campaigns;
 pub mod groups;
+pub mod multiplayer;
 
 async fn health() -> HttpResponse {
     HttpResponse::Ok().finish()
@@ -81,6 +82,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/ws/arena", web::get().to(arena_ws::arena_ws))
         .route("/ws/coop", web::get().to(coop_ws::coop_ws))
         .route("/ws/chat", web::get().to(chat_ws::chat_ws))
+        // Public lobby snapshot: online players, live Face-Offs, open co-op parties.
+        .route("/multiplayer/live", web::get().to(multiplayer::live))
         .service(
             web::scope("/identity")
                 .route("/verify/{wallet}", web::get().to(identity::verify_identity))
