@@ -46,8 +46,13 @@ export type ClipName = 'idle' | 'walk' | 'run' | 'strafeL' | 'strafeR' | 'fire' 
 /** Matches FPS_TUNING's hitbox height so what you see is what you shoot. */
 // (height comes from the head bone; see below)
 const FADE = 0.18;
-/** A corpse's lowest bone rests this far above the floor (bones sit inside flesh). */
-const FLOOR_CLEARANCE = 0.06;
+/** Gap kept between the lowest point of the SKIN and the floor. Covers the error
+ *  of sampling every SKIN_STRIDE-th vertex (measured under 1 cm). */
+const SKIN_CLEARANCE = 0.008;
+/** Ground against every Nth vertex: ~1.4k of the operator's 11.4k, ample for a floor test. */
+const SKIN_STRIDE = 8;
+/** How long a corpse keeps re-grounding after death (the fall has settled by then). */
+const DEATH_SETTLE_S = 3.5;
 
 export interface OperatorApi {
   /** Crossfade to a looping clip. A negative `timeScale` plays it backwards
@@ -336,7 +341,6 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   const aimQ = useRef(new THREE.Quaternion());
   const aimOn = useRef(false);
   const crouch = useRef(0);
-  const crouchWas = useRef(false);
   // Parts of the RENDERED body for the player-only features (rifle aim, crouch).
   //
   // Found by walking what is actually mounted (groupRef), not taken from the refs
@@ -348,15 +352,19 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   // in production alike.
   type LiveParts = { root: THREE.Object3D; grip: THREE.Object3D | null; gun: THREE.Object3D | null;
     upL: THREE.Object3D | null; upR: THREE.Object3D | null; legL: THREE.Object3D | null; legR: THREE.Object3D | null;
-    spine: THREE.Object3D | null; ground: THREE.Object3D[] };
+    spine: THREE.Object3D | null; skins: THREE.SkinnedMesh[];
+    /** Lift that puts the standing soles on the floor (NaN until measured). */
+    standLift: number };
   const live = useRef<LiveParts | null>(null);
   const liveParts = (): LiveParts | null => {
     const root = groupRef.current;
     if (!root) return null;
     if (live.current && live.current.root === root) return live.current;
-    const p: LiveParts = { root, grip: null, gun: null, upL: null, upR: null, legL: null, legR: null, spine: null, ground: [] };
+    const p: LiveParts = { root, grip: null, gun: null, upL: null, upR: null, legL: null, legR: null, spine: null, skins: [], standLift: NaN };
     root.traverse((o) => {
       if (o.userData.valorRifle && !p.gun) { p.gun = o; p.grip = o.parent; }
+      const sk = o as THREE.SkinnedMesh;
+      if (sk.isSkinnedMesh && sk.visible) p.skins.push(sk);
       if (!(o as THREE.Bone).isBone) return;
       const n = o.name;
       if (!p.upL && /LeftUpLeg$/i.test(n)) p.upL = o;
@@ -364,13 +372,28 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       else if (!p.legL && /LeftLeg$/i.test(n)) p.legL = o;
       else if (!p.legR && /RightLeg$/i.test(n)) p.legR = o;
       else if (!p.spine && /Spine$/i.test(n)) p.spine = o;
-      if (/(hips|leftfoot|rightfoot|head|leftforearm|rightforearm)$/i.test(n)) p.ground.push(o);
     });
     live.current = p;
     return p;
   };
   const tmpQ2 = useMemo(() => new THREE.Quaternion(), []);
   const tmpV = useMemo(() => new THREE.Vector3(), []);
+  const deadFor = useRef(0);
+  /** World Y of the lowest point of the posed skin (CPU-skinned vertex sample).
+   *  Bones sit inside the body, so grounding on them leaves feet, backs and arms
+   *  a few centimetres under the floor; this measures the surface itself. */
+  const lowestSkinY = (lp: LiveParts): number => {
+    lp.root.updateMatrixWorld(true);
+    let m = Infinity;
+    for (const sk of lp.skins) {
+      const n = sk.geometry.attributes.position.count;
+      for (let i = 0; i < n; i += SKIN_STRIDE) {
+        sk.getVertexPosition(i, tmpV).applyMatrix4(sk.matrixWorld);
+        if (tmpV.y < m) m = tmpV.y;
+      }
+    }
+    return m;
+  };
 
   useFrame((_, dt) => {
     // Skip everything for a rig nobody can see. three.js won't DRAW a hidden object,
@@ -403,26 +426,31 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       aligned.current = true;
     }
 
-    // Procedural crouch: bend on top of the clip's pose (the mixer rewrites the
-    // bones every frame, so this is additive per frame, not cumulative), then drop
-    // the body so the lowest foot is back on the floor.
-    const lp = (crouch.current > 0.001 || crouchWas.current || aimOn.current) ? liveParts() : null;
+    // Grounding + procedural crouch, on the body actually drawn (see liveParts).
+    const lp = liveParts();
     const body = lp?.root.children[0] ?? null; // the mounted clone (<primitive object={rig}>)
     if (lp && body && !dead.current) {
+      deadFor.current = 0;
+      // Measure once, on the first animated frame: how far the soles sit below
+      // the floor at y=0 (scaling from the head bone leaves them ~3 cm under).
+      if (Number.isNaN(lp.standLift)) {
+        body.position.y = 0;
+        const low = lowestSkinY(lp);
+        lp.standLift = Number.isFinite(low) ? Math.max(0, Math.min(0.12, SKIN_CLEARANCE - low)) : 0;
+      }
       const c = crouch.current;
       if (c > 0.001 && lp.upL && lp.upR && lp.legL && lp.legR) {
+        // Bend on top of the clip's pose (the mixer rewrites the bones every
+        // frame, so this is per frame, not cumulative), then drop the body so the
+        // lowest point of the skin is back on the floor.
         lp.upL.rotateX(CROUCH_HIP * c); lp.upR.rotateX(CROUCH_HIP * c);
         lp.legL.rotateX(CROUCH_KNEE * c); lp.legR.rotateX(CROUCH_KNEE * c);
         if (lp.spine) lp.spine.rotateX(CROUCH_LEAN * c);
         body.position.y = 0;
-        body.updateMatrixWorld(true);
-        let minY = Infinity;
-        for (const bone of lp.ground) minY = Math.min(minY, bone.getWorldPosition(tmpV).y);
-        if (Number.isFinite(minY)) body.position.y = FLOOR_CLEARANCE - minY;
-        crouchWas.current = true;
-      } else if (crouchWas.current) {
-        body.position.y = 0;
-        crouchWas.current = false;
+        const low = lowestSkinY(lp);
+        if (Number.isFinite(low)) body.position.y = SKIN_CLEARANCE - low;
+      } else {
+        body.position.y = lp.standLift;
       }
     }
 
@@ -435,23 +463,20 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       lp.gun.position.copy(GUN_POS).applyQuaternion(lp.gun.quaternion).multiplyScalar(lp.gun.scale.x);
     }
 
-    // A death clip drops the hips toward the floor but nothing re-grounds the rig,
-    // so the body sinks. Lift it until the lowest bone rests on the ground.
-    if (dead.current && groundBones.current.length) {
-      rig.updateMatrixWorld(true);
-      let minY = Infinity;
-      for (const bone of groundBones.current) {
-        const y = bone.getWorldPosition(tmpV).y;
-        if (y < minY) minY = y;
-      }
+    // A death clip drops the body toward the floor but nothing re-grounds the
+    // rig, so it would sink. Lift it until the lowest point of the skin rests on
+    // the floor. Only while the fall settles; after that the pose is frozen.
+    if (dead.current && lp && body && deadFor.current < DEATH_SETTLE_S) {
+      deadFor.current += dt;
+      const minY = lowestSkinY(lp);
       if (Number.isFinite(minY)) {
-        if (minY < FLOOR_CLEARANCE) {
+        if (minY < SKIN_CLEARANCE) {
           // sinking: lift it out of the floor immediately
-          rig.position.y += FLOOR_CLEARANCE - minY;
+          body.position.y += SKIN_CLEARANCE - minY;
         } else {
           // NEVER press a body down just because its feet came off the ground
           // mid-fall -- that is what made corpses sink. Relax the lift instead.
-          rig.position.y += (0 - rig.position.y) * Math.min(1, dt * 4);
+          body.position.y += (0 - body.position.y) * Math.min(1, dt * 4);
         }
       }
     }
