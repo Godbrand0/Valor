@@ -7,6 +7,7 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import * as THREE from 'three';
 import { FPS_TUNING } from '../fps';
 import { useRiflePrototype, cloneRifle } from './rifle';
+import { inPlace } from './rootMotion';
 
 /** Melee props baked into the placeholder body. A shooter carries none of these. */
 const STRIP = /sword|shield/i;
@@ -194,7 +195,8 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   useEffect(() => {
     const mixer = new THREE.AnimationMixer(rig);
     mixerRef.current = mixer;
-    for (const clip of animations) {
+    for (const source of animations) {
+      const clip = inPlace(source);
       const name = clip.name as ClipName;
       const action = mixer.clipAction(clip);
       actions.current[name] = action;
@@ -260,6 +262,18 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
         distHandToGun: +gp.distanceTo(hp).toFixed(3),
         gunWorldScale: +gs.x.toFixed(4),
         gunSizeMetres: [+size.x.toFixed(2), +size.y.toFixed(2), +size.z.toFixed(2)],
+        gunBoxMin: [+box.min.x.toFixed(2), +box.min.y.toFixed(2), +box.min.z.toFixed(2)],
+        gunBoxMax: [+box.max.x.toFixed(2), +box.max.y.toFixed(2), +box.max.z.toFixed(2)],
+        // How far the rifle sticks out horizontally from the body centre (hips), to
+        // compare against the sim's collision radius FPS_TUNING.ENEMY.BODY_R.
+        rifleReachFromHips: (() => {
+          const hips = groundBones.current.find((b) => /hips$/i.test(b.name))
+          if (!hips) return null
+          const h = hips.getWorldPosition(new THREE.Vector3())
+          let m = 0
+          for (const x of [box.min.x, box.max.x]) for (const z of [box.min.z, box.max.z]) m = Math.max(m, Math.hypot(x - h.x, z - h.z))
+          return +m.toFixed(2)
+        })(),
         localScale: +gun.scale.x.toFixed(4),
         meshCount: gun.getObjectsByProperty('isMesh', true).length,
         dead: dead.current,

@@ -1474,7 +1474,18 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     w.__valorSkipBriefing = () => { briefingUntil.current = 0; };
     w.__valorXp = () => ({ careerXp: careerXp.current, rank: rankForXp(careerXp.current), intoRank: xpIntoRank(careerXp.current) });
     w.__valorStory = () => ({ fired: [...storyFired.current], queued: voQueue.current.length });
-    w.__valorRig = () => rigApis.current[0]?.debug() ?? null;
+    w.__valorRig = (i = 0) => rigApis.current[i]?.debug() ?? null;
+    // How far enemy i's skeleton reaches horizontally from where the sim placed it
+    // (its collision centre) — e.g. a corpse thrown by the death clip.
+    w.__valorBody = (i = 0) => {
+      const g = dummyRefs.current[i];
+      if (!g) return null;
+      const c = g.getWorldPosition(new THREE.Vector3());
+      const p = new THREE.Vector3();
+      let reach = 0, hips = -1;
+      g.traverse((o) => { if ((o as THREE.Bone).isBone) { o.getWorldPosition(p); const d = Math.hypot(p.x - c.x, p.z - c.z); reach = Math.max(reach, d); if (hips < 0 && /hips$/i.test(o.name)) hips = d; } });
+      return { x: +c.x.toFixed(2), z: +c.z.toFixed(2), reach: +reach.toFixed(2), hips: +hips.toFixed(2), visible: g.visible, rig: rigApis.current[i]?.debug() ?? null };
+    };
     w.__valorPlayer = () => ({ x: +pos.current.x.toFixed(3), z: +pos.current.z.toFixed(3) });
     w.__valorStagger = () => ({
       shoveX: +shoveX.current.toFixed(4), shoveZ: +shoveZ.current.toFixed(4),
@@ -1527,7 +1538,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     return () => {
       delete w.__valorState; delete w.__valorKillAll; delete w.__valorKillRoom; delete w.__valorKillPlayer; delete w.__valorAim; delete w.__valorAudio;
       delete w.__valorMission; delete w.__valorEndless; delete w.__valorWarp; delete w.__valorSkipBriefing;
-      delete w.__valorXp; delete w.__valorSetXp; delete w.__valorStory; delete w.__valorVo; delete w.__valorRig; delete w.__valorPlayer; delete w.__valorColliders; delete w.__valorCam; delete w.__valorStagger; delete w.__valorHurtBoss; delete w.__valorWakeRoom; delete w.__valorSwitch; delete w.__valorFire; delete w.__valorToggle;
+      delete w.__valorXp; delete w.__valorSetXp; delete w.__valorStory; delete w.__valorVo; delete w.__valorRig; delete w.__valorBody; delete w.__valorPlayer; delete w.__valorColliders; delete w.__valorCam; delete w.__valorStagger; delete w.__valorHurtBoss; delete w.__valorWakeRoom; delete w.__valorSwitch; delete w.__valorFire; delete w.__valorToggle;
       delete w.__valorRevive; delete w.__valorResupply; delete w.__valorWaveSkip; delete w.__valorPerf;
     };
   }, [sim, audio]);
