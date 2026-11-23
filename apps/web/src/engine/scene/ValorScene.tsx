@@ -38,7 +38,8 @@ import { AIM_DEFAULTS, SENS_MIN, SENS_MAX, SMOOTH_RATE, loadAimSettings, saveAim
 import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout } from '../input/controlLayout';
 import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
 import { placeCamera, aimPoint, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
-import { classifyMoveDir, type MoveDir } from '../animation/AnimationStateMachine';
+import type { MoveDir } from '../animation/AnimationStateMachine';
+import { driveOperatorLocomotion, aimOperatorAlong } from './operatorLocomotion';
 
 /**
  * Valor clone · slice 1 graybox (docs/the plan.md).
@@ -59,18 +60,12 @@ import { classifyMoveDir, type MoveDir } from '../animation/AnimationStateMachin
  */
 
 const EYE_STAND = 1.6;
-const ZERO_V = new THREE.Vector3(0, 0, 0);
-const UP_V = new THREE.Vector3(0, 1, 0);
 const EYE_CROUCH = 1.02;
 const PLAYER_R = 0.35;
 
 const WALK = 3.4;     // m/s base
 const ADS_MOVE = 0.55;
 const CROUCH_MOVE = 0.5;
-/** Ground speed (m/s) each operator.glb locomotion clip covers at timeScale 1,
- *  measured from its root motion at the in-game scale. Used to play your own
- *  third-person body at the rate that matches how fast you move. */
-const SELF_CLIP_SPEED = { walk: 1.02, run: 3.17, stepLeft: 2.79, stepRight: 3.31 } as const;
 
 const LOOK_SENS = 0.0010;       // rad per mouse pixel — fine aim (was far too fast)
 const KEY_LOOK = 0.9;           // rad/s for arrow-key look — small nudges
@@ -1235,8 +1230,6 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   const eyeV = useMemo(() => new THREE.Vector3(), []);
   const camDist = useRef(0);   // eased third-person boom length (snaps in, eases out)
   const aimPt = useMemo(() => new THREE.Vector3(), []);
-  const selfAimM = useMemo(() => new THREE.Matrix4(), []);
-  const selfAimQ = useMemo(() => new THREE.Quaternion(), []);
   const teammateRigApis = useRef<Array<OperatorApi | null>>([]);
   const teammateStepDist = useRef<number[]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => 0));
   const teammateStepPos = useRef<[number, number][]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => [0, 0]));
@@ -1964,31 +1957,10 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
         selfG.rotation.set(0, yaw.current + Math.PI, 0);
         const rig = selfRig.current;
         if (rig) {
-          rig.setCrouch(selfAlive ? crouchCur.current : 0);
-          const crouched = crouchCur.current > 0.5;
-          let shuffle: -1 | 0 | 1 = 0;
-          if (!selfAlive) rig.setClip('death');
-          else if (!moving) rig.setClip('idle'); // rifle shouldered
-          else {
-            selfMoveDir.current = classifyMoveDir(mf, ms, selfMoveDir.current);
-            const dir = selfMoveDir.current;
-            // Crouched sidesteps step over the idle stance (see setShuffle):
-            // the strafe clips' turned hips point a crouched soldier's knees sideways.
-            // Each clip plays at the rate that makes its feet cover the ground you
-            // actually cover, so planted feet stay planted instead of skating.
-            const ground = speed * Math.hypot(mf, ms);
-            const rate = (clipSpeed: number) => Math.max(0.6, Math.min(1.9, ground / clipSpeed));
-            if (crouched && (dir === 'left' || dir === 'right')) { rig.setClip('idle'); shuffle = dir === 'left' ? 1 : -1; }
-            // operator.glb's strafe clips are named backwards: 'strafeR' steps to the
-            // body's LEFT and 'strafeL' to its RIGHT (measured: see SELF_CLIP_SPEED).
-            else if (dir === 'left') rig.setClip('strafeR', rate(SELF_CLIP_SPEED.stepLeft));
-            else if (dir === 'right') rig.setClip('strafeL', rate(SELF_CLIP_SPEED.stepRight));
-            // No walk-backwards clip: the walk played in reverse reads as a back-pedal.
-            else if (dir === 'back') rig.setClip('walk', -rate(SELF_CLIP_SPEED.walk));
-            else if (crouched || adsCur.current > 0.5) rig.setClip('walk', rate(SELF_CLIP_SPEED.walk));
-            else rig.setClip('run', rate(SELF_CLIP_SPEED.run));
-          }
-          rig.setShuffle(shuffle);
+          selfMoveDir.current = driveOperatorLocomotion(rig, {
+            alive: selfAlive, fwd: moving ? mf : 0, right: moving ? ms : 0, speed,
+            crouch: crouchCur.current, ads: adsCur.current > 0.5,
+          }, selfMoveDir.current);
         }
         // Tracers, flash and laser come out of the rifle you can see.
         const bodyMuzzle = selfG.getObjectByName('muzzle');
@@ -2008,10 +1980,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // up and down included. Dead: let go of it and fall with the clip.
     if (tpp && selfRig.current) {
       if (selfAlive) {
-        tmp.set(shotDir[0], shotDir[1], shotDir[2]);
-        selfAimM.lookAt(tmp, ZERO_V, UP_V); // object convention: +Z toward the target
-        selfAimQ.setFromRotationMatrix(selfAimM);
-        selfRig.current.setAim(selfAimQ);
+        aimOperatorAlong(selfRig.current, tmp.set(shotDir[0], shotDir[1], shotDir[2]));
       } else selfRig.current.setAim(null);
     }
 

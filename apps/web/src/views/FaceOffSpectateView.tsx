@@ -134,8 +134,9 @@ export default function FaceOffSpectateView() {
               {players.map((p: PlayerSnapshot, i) => {
                 const { sx, sy } = toSvg(p.x, p.z)
                 const facingLen = 0.7
-                const fx = sx + Math.sin(p.yaw) * facingLen
-                const fy = sy - Math.cos(p.yaw) * facingLen
+                // yaw 0 looks down world -Z (camera convention), i.e. +y on this map.
+                const fx = sx - Math.sin(p.yaw) * facingLen
+                const fy = sy + Math.cos(p.yaw) * facingLen
                 return (
                   <g key={p.wallet} opacity={p.hp > 0 ? 1 : 0.3}>
                     <line x1={sx} y1={sy} x2={fx} y2={fy} stroke={FIGHTER_COLOR[i]} strokeWidth={0.12} />

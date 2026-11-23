@@ -475,11 +475,9 @@ impl ArenaServer {
 
         // Spawned facing each other from opposite ends of the real room, just
         // inside each sealed cap — same 1.5m standoff `spawnPointFor` uses for
-        // a chain room's entry point. yaw=0.0 at z=7.3 (and yaw=PI at z=-7.3)
-        // face INTO the room, away from the cap immediately behind — verified
-        // against `ArenaScene.tsx`'s camera rendering, not assumed from the
-        // aim_dir formula alone (empirically the two are opposite of what a
-        // naive reading of aim_dir suggests — see that file's spawn comment).
+        // a chain room's entry point. yaw=0.0 looks down -Z (see `aim_dir`),
+        // so yaw=0.0 at z=7.3 and yaw=PI at z=-7.3 both face INTO the room —
+        // pinned by `spawned_fighters_face_and_walk_toward_each_other`.
         let p1 = PlayerState::spawn(e1.wallet, e1.name, e1.stake_g, e1.tx, 0.0, 7.3, 0.0);
         let p2 = PlayerState::spawn(e2.wallet, e2.name, e2.stake_g, e2.tx, 0.0, -7.3, PI);
 
@@ -936,9 +934,10 @@ fn integrate_movement_and_aim(p: &mut PlayerState, dt: f32) {
     // `resolve_move`) instead of trusting an open box.
     let raw_len = (input.move_x * input.move_x + input.move_y * input.move_y).sqrt();
     let (mx, my) = if raw_len > 1.0 { (input.move_x / raw_len, input.move_y / raw_len) } else { (input.move_x, input.move_y) };
+    // Camera convention (see `aim_dir`): forward = (-sin, -cos), right = (cos, -sin).
     let (sy, cy) = p.yaw.sin_cos();
-    let dir_x = sy * my + cy * mx;
-    let dir_z = cy * my + (-sy) * mx;
+    let dir_x = -sy * my + cy * mx;
+    let dir_z = -cy * my - sy * mx;
     let target_x = p.x + dir_x * WALK_SPEED * dt;
     let target_z = p.z + dir_z * WALK_SPEED * dt;
     let (resolved_x, resolved_z) = resolve_move(p.x, p.z, target_x, target_z, PLAYER_RADIUS);
@@ -1022,10 +1021,16 @@ fn effective_spread_half_angle(crouching: bool, ads: bool) -> f32 {
     s
 }
 
+/// Where a player at `yaw`/`pitch` is looking. THE SAME CONVENTION AS THE
+/// CLIENT'S CAMERA (three.js, rotation order YXZ: yaw 0 looks down -Z, positive
+/// pitch looks up), because the client sends its camera's yaw/pitch verbatim.
+/// This used to be (sin, cos) — the opposite way — so in a real match W walked
+/// you backwards into the wall behind your spawn and every shot left from your
+/// back, while the spawn facings (tuned by eye against the camera) looked right.
 fn aim_dir(yaw: f32, pitch: f32) -> (f32, f32, f32) {
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();
-    (sy * cp, sp, cy * cp)
+    (-sy * cp, sp, -cy * cp)
 }
 
 /// Full-auto while `firing` is held, gated by fire-rate cadence, ammo, and
@@ -1307,6 +1312,37 @@ mod tests {
         assert!(x1.abs() <= ARENA_HALF_X && z1.abs() <= ARENA_HALF_Z, "player must stay inside the arena bounds");
     }
 
+    /// The regression this file shipped with: spawn facings matched the client's
+    /// camera but movement/aim used the opposite convention, so from spawn W
+    /// walked into the wall behind you and shots left from your back. From
+    /// each spawn, holding the spawn yaw, forward must close the gap and a shot
+    /// along the aim must reach the opponent's side of the room.
+    #[tokio::test]
+    async fn spawned_fighters_face_and_walk_toward_each_other() {
+        let mut server = new_server();
+        let duel_id = Uuid::new_v4();
+        let (mut rx1, mut rx2) = paired_and_fighting(&mut server, duel_id).await;
+        let (y1, y2, z1a, z2a) = { let r = server.rooms.get(&duel_id.to_string()).unwrap(); (r.p1.yaw, r.p2.yaw, r.p1.z, r.p2.z) };
+
+        // Aim from each spawn points at the other fighter's end of the room.
+        let (_, _, d1z) = aim_dir(y1, 0.0);
+        let (_, _, d2z) = aim_dir(y2, 0.0);
+        assert!((z2a - z1a) * d1z > 0.0, "p1's aim must point toward p2 (p1 z={}, p2 z={}, aim dz={})", z1a, z2a, d1z);
+        assert!((z1a - z2a) * d2z > 0.0, "p2's aim must point toward p1 (aim dz={})", d2z);
+
+        // Walking forward from spawn closes the distance.
+        server.on_input("0xAAA", InputSample { move_y: 1.0, yaw: y1, ..Default::default() });
+        server.on_input("0xBBB", InputSample { move_y: 1.0, yaw: y2, ..Default::default() });
+        for _ in 0..10 {
+            server.on_tick();
+            let _ = next_json(&mut rx1).await;
+            let _ = next_json(&mut rx2).await;
+        }
+        let (z1b, z2b) = { let r = server.rooms.get(&duel_id.to_string()).unwrap(); (r.p1.z, r.p2.z) };
+        assert!((z1b - z2b).abs() < (z1a - z2a).abs() - 1.0,
+            "forward from spawn must close the gap: was {}, now {}", (z1a - z2a).abs(), (z1b - z2b).abs());
+    }
+
     #[tokio::test]
     async fn aim_turns_gradually_not_instantly_to_the_requested_yaw() {
         let mut server = new_server();
@@ -1348,10 +1384,10 @@ mod tests {
             room.p2.z = room.p1.z;
         }
 
-        // Aim p1 dead at p2's (now nearby) position. Forward at yaw=0 is +Z (aim_dir's
-        // convention: (sin(yaw), sin(pitch), cos(yaw)) at pitch=0 gives
-        // (sin(yaw), 0, cos(yaw))) — both players spawn at z=0, p1 at -X and
-        // p2 at +X, so facing p2 means yaw = PI/2 (forward = (1, 0, 0)).
+        // Aim p1 dead at p2's (now nearby) position. Forward at yaw=0 is -Z (aim_dir's
+        // convention: (-sin(yaw), sin(pitch), -cos(yaw)) at pitch=0 gives
+        // (-sin(yaw), 0, -cos(yaw))) — p2 sits 1m to p1's +X, so facing p2
+        // means yaw = -PI/2 (forward = (1, 0, 0)).
         //
         // Set via input, not by poking room.p1.yaw directly: aim is
         // integration-driven (see MAX_YAW_RATE), so a directly-set yaw would
@@ -1360,13 +1396,13 @@ mod tests {
         // fully arrived (MAX_YAW_RATE bounds how fast — see the turn-rate
         // test above) before any shot is fired, so no hit_confirm is missed
         // by being drained during this warm-up phase.
-        server.on_input("0xAAA", InputSample { yaw: PI / 2.0, pitch: 0.0, ..Default::default() });
+        server.on_input("0xAAA", InputSample { yaw: -PI / 2.0, pitch: 0.0, ..Default::default() });
         for _ in 0..5 {
             server.on_tick();
             let _ = next_json(&mut rx1).await;
             let _ = next_json(&mut rx2).await;
         }
-        server.on_input("0xAAA", InputSample { firing: true, yaw: PI / 2.0, pitch: 0.0, ..Default::default() });
+        server.on_input("0xAAA", InputSample { firing: true, yaw: -PI / 2.0, pitch: 0.0, ..Default::default() });
 
         let mut saw_hit = false;
         for _ in 0..5 {
@@ -1391,7 +1427,7 @@ mod tests {
         // height 1.15 — chest-high: a standing shot (eye 1.6) flies over it,
         // a crouched one (eye 1.02, inside the box's 0..1.15 span) doesn't.
         // Both fighters stand at x=-6 (well inside the box's x-span) on
-        // opposite sides of it, aimed straight at each other (yaw=0 = +Z).
+        // opposite sides of it, aimed straight at each other (yaw=PI = +Z).
         let mut server = new_server();
         let duel_id = Uuid::new_v4();
         let (mut rx1, mut rx2) = paired_and_fighting(&mut server, duel_id).await;
@@ -1403,9 +1439,9 @@ mod tests {
 
         // Standing: let aim settle, then fire — should land (nothing at
         // standing eye height 1.6 obstructs it).
-        server.on_input("0xAAA", InputSample { yaw: 0.0, pitch: 0.0, ..Default::default() });
+        server.on_input("0xAAA", InputSample { yaw: PI, pitch: 0.0, ..Default::default() });
         for _ in 0..5 { server.on_tick(); let _ = next_json(&mut rx1).await; let _ = next_json(&mut rx2).await; }
-        server.on_input("0xAAA", InputSample { firing: true, yaw: 0.0, pitch: 0.0, ..Default::default() });
+        server.on_input("0xAAA", InputSample { firing: true, yaw: PI, pitch: 0.0, ..Default::default() });
         let mut standing_hit = false;
         for _ in 0..5 {
             server.on_tick();
@@ -1423,10 +1459,10 @@ mod tests {
             room.p1.x = -6.0; room.p1.z = -3.0;
             room.p2.x = -6.0; room.p2.z = 3.0;
         }
-        server.on_input("0xAAA", InputSample { yaw: 0.0, pitch: 0.0, crouching: true, ..Default::default() });
+        server.on_input("0xAAA", InputSample { yaw: PI, pitch: 0.0, crouching: true, ..Default::default() });
         server.on_input("0xBBB", InputSample { crouching: true, ..Default::default() });
         for _ in 0..5 { server.on_tick(); let _ = next_json(&mut rx1).await; let _ = next_json(&mut rx2).await; }
-        server.on_input("0xAAA", InputSample { firing: true, yaw: 0.0, pitch: 0.0, crouching: true, ..Default::default() });
+        server.on_input("0xAAA", InputSample { firing: true, yaw: PI, pitch: 0.0, crouching: true, ..Default::default() });
         let mut crouched_hit = false;
         for _ in 0..8 {
             server.on_tick();
@@ -1447,18 +1483,15 @@ mod tests {
         // buffered footprint (box3 at x=3 ends at 4.35+PLAYER_RADIUS, box4 at
         // x=6.8 starts at 5.55-PLAYER_RADIUS) but still well inside the side
         // walls, so this run isolates WALL collision from cover collision
-        // (there's a separate test for cover). Facing yaw=PI (forward = -Z)
-        // straight down that lane toward the sealed south cap at z=-8.8
-        // (inner face -8.5) — enough ticks to cross the whole ~15.8m room if
-        // nothing stopped it. yaw is held at PI explicitly on every input —
-        // it defaults to 0.0 otherwise, which would steer the aim (and so the
-        // camera-relative movement direction) away from spawn-facing within
-        // a few ticks at MAX_YAW_RATE, sending the player the wrong way.
+        // (there's a separate test for cover). Facing yaw=0 (forward = -Z, p1's
+        // spawn facing) straight down that lane toward the sealed south cap at
+        // z=-8.8 (inner face -8.5) — enough ticks to cross the whole ~15.8m
+        // room if nothing stopped it.
         {
             let room = server.rooms.get_mut(&duel_id.to_string()).unwrap();
             room.p1.x = 5.0; room.p1.z = 7.3;
         }
-        server.on_input("0xAAA", InputSample { move_y: 1.0, yaw: PI, ..Default::default() });
+        server.on_input("0xAAA", InputSample { move_y: 1.0, yaw: 0.0, ..Default::default() });
         for _ in 0..200 {
             server.on_tick();
             let _ = next_json(&mut rx1).await;
