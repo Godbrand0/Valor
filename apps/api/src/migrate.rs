@@ -109,8 +109,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     // reason as add_duel_invites.sql above.
     ("add_survival_run_start_chain.sql", include_str!("../migrations/add_survival_run_start_chain.sql")),
     // Seeds from season_payouts, seasons.payout_group_id and player_groups, all
-    // applied above, so it goes last.
+    // applied above.
     ("add_withdraw_fee_discounts.sql", include_str!("../migrations/add_withdraw_fee_discounts.sql")),
+    // ALTERs `items` (created_at) — long applied by the time this runs.
+    ("add_notifications.sql",     include_str!("../migrations/add_notifications.sql")),
 ];
 
 /// Apply every migration not yet recorded, in order, each in its own transaction. Called

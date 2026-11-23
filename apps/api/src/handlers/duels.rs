@@ -480,7 +480,7 @@ pub async fn create_duel(
     if let Some(ref invited) = invited_wallet {
         let challenger_name = display_name(&state.db, &wallet).await.unwrap_or_else(|| "A friend".into());
         notify(
-            &state, invited.clone(),
+            &state, invited.clone(), "duel",
             format!("{challenger_name} challenged you to a duel — {} G$", body.stake_g),
             "/duels",
         );
@@ -567,7 +567,7 @@ pub async fn accept_duel(
 
     let accepter_name = display_name(&state.db, &wallet).await.unwrap_or_else(|| "A player".into());
     notify(
-        &state, duel.challenger_wallet.clone(),
+        &state, duel.challenger_wallet.clone(), "duel",
         format!("{accepter_name} accepted your duel challenge — {} G$", duel.stake_g),
         "/duels",
     );
@@ -1040,7 +1040,7 @@ pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
                 if claimed.map(|r| r.rows_affected()).unwrap_or(0) != 1 { continue; }
                 let tx = settle_cancel(state, d.id, &d.challenger_wallet, d.stake_g).await;
                 tracing::info!("duel {} expired unaccepted — refunded {} G$ to {} (tx {:?})", d.id, d.stake_g, d.challenger_wallet, tx);
-                notify(state, d.challenger_wallet.clone(),
+                notify(state, d.challenger_wallet.clone(), "duel",
                     format!("Nobody took your {} G$ duel in time — your stake is back in your wallet", d.stake_g), "/duels");
                 refunded += 1;
             }
@@ -1068,9 +1068,9 @@ pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
                 let _ = sqlx::query("UPDATE duels SET payout_tx = $1 WHERE id = $2")
                     .bind(&tx).bind(d.id).execute(&state.db).await;
                 tracing::info!("duel {} forfeited by {} (no score) — {} paid {} G$ (tx {:?})", d.id, loser, winner, winner_payout(d.stake_g), tx);
-                notify(state, winner.clone(),
+                notify(state, winner.clone(), "duel",
                     format!("Your opponent never finished their run — you win {} G$", winner_payout(d.stake_g)), "/duels");
-                notify(state, loser,
+                notify(state, loser, "duel",
                     format!("Your duel run was never submitted, so the {} G$ duel went to your opponent", d.stake_g), "/duels");
                 forfeited += 1;
             }
@@ -1094,7 +1094,7 @@ pub async fn run_expiry_sweep_inner(state: &AppState) -> serde_json::Value {
                     tracing::info!("duel {} expired with no scores — both refunded {} G$ (txs {:?})", d.id, d.stake_g, txs);
                 }
                 for w in [d.challenger_wallet.clone(), opponent] {
-                    notify(state, w, format!("Your {} G$ duel was never played — your stake is back in your wallet", d.stake_g), "/duels");
+                    notify(state, w, "duel", format!("Your {} G$ duel was never played — your stake is back in your wallet", d.stake_g), "/duels");
                 }
                 voided += 1;
             }

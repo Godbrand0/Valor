@@ -43,7 +43,11 @@ pub async fn insert_ledger_entry(
 
     if let Err(e) = result {
         tracing::error!("Failed to record g_ledger entry ({} {} {}): {}", wallet, category, amount, e);
+        return;
     }
+    // Every G$ movement passes through here, so this one hook is what puts money
+    // received and completed transactions in the notification bell.
+    crate::services::notifications::record_for_ledger(db, wallet, category, amount, tx_hash, counterparty).await;
 }
 
 // ── Withdrawal fee ─────────────────────────────────────────────────────────────

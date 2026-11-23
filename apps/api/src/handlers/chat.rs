@@ -81,7 +81,7 @@ pub async fn send_message(
         Ok(row) => {
             let sender_name = display_name(&state.db, &wallet).await.unwrap_or_else(|| "A friend".into());
             let preview: String = text.chars().take(PUSH_PREVIEW_LEN).collect();
-            notify(&state, other.clone(), format!("{sender_name}: {preview}"), "/friends");
+            notify(&state, other.clone(), "message", format!("{sender_name}: {preview}"), "/friends");
 
             let payload = json!({
                 "type": "new_message",
