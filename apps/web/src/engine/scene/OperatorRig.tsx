@@ -19,6 +19,13 @@ const STRIP = /sword|shield/i;
 const GRIP_BONE = /righthand$/i;
 /** Grip offset in hand-bone space. Tuned against the aim-idle pose. */
 const GUN_POS = new THREE.Vector3(0, 0, 0.18);
+/** Procedural crouch bend at full crouch (radians, bone-local X): thighs swing
+ *  forward, shins fold back under them (knees point the way he faces), and the
+ *  torso leans in. Measured against the idle pose so the head drops ~0.57 m,
+ *  matching the first-person EYE_STAND -> EYE_CROUCH drop. */
+const CROUCH_HIP = 1.0;
+const CROUCH_KNEE = -1.9;
+const CROUCH_LEAN = 0.5;
 
 /**
  * A rifle-carrying enemy body (the plan slice 7b).
@@ -43,8 +50,20 @@ const FADE = 0.18;
 const FLOOR_CLEARANCE = 0.06;
 
 export interface OperatorApi {
-  /** Crossfade to a looping clip. */
-  setClip(name: ClipName): void;
+  /** Crossfade to a looping clip. A negative `timeScale` plays it backwards
+   *  (the standard back-pedal trick when there is no walk-backwards clip). */
+  setClip(name: ClipName, timeScale?: number): void;
+  /**
+   * Hold the rifle along this WORLD orientation (+Z = barrel) every frame, in the
+   * grip hand, instead of the one-off alignment. For the player's own third-person
+   * body, whose rifle must follow the real aim. `null` returns to the default.
+   * Enemies never call this, so their rifles keep their existing hold.
+   */
+  setAim(q: THREE.Quaternion | null): void;
+  /** Procedural crouch, 0 (standing) .. 1 (full). The model has no crouch clip, so
+   *  this bends hips and knees on top of whatever clip is playing and lowers the
+   *  body until the feet are back on the floor. */
+  setCrouch(amount: number): void;
   /** Fire a one-shot clip over the top (returns to the looping clip after). */
   playOnce(name: ClipName, timeScale?: number): void;
   /** Emissive tint: the aim telegraph (amber) and the hit flash (red). */
@@ -188,6 +207,7 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       grip.getWorldScale(ws);
       gun.scale.setScalar(ws.x > 1e-6 ? 1 / ws.x : 1);
       gun.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.castShadow = true; });
+      gun.userData.valorRifle = true;
       grip.add(gun);
       gunRef.current = gun;
       gripRef.current = grip;
@@ -220,10 +240,11 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   }, [rig, animations]);
 
   useImperativeHandle(ref, (): OperatorApi => ({
-    setClip(name) {
-      if (current.current === name) return;
+    setClip(name, timeScale = 1) {
       const next = actions.current[name];
       if (!next) return;
+      if (current.current === name) { next.timeScale = timeScale; return; }
+      next.timeScale = timeScale;
       const prev = current.current ? actions.current[current.current] : null;
       if (name === 'death') {
         next.reset();
@@ -241,6 +262,12 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       next.fadeIn(FADE).play();
       if (prev && prev !== next) prev.fadeOut(FADE);
       current.current = name;
+    },
+    setAim(q) {
+      if (q) { aimQ.current.copy(q); aimOn.current = true; } else aimOn.current = false;
+    },
+    setCrouch(amount) {
+      crouch.current = Math.max(0, Math.min(1, amount));
     },
     playOnce(name, timeScale = 1) {
       const a = actions.current[name];
@@ -306,6 +333,42 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
   }), [rig]);
 
   const tmpQ = useMemo(() => new THREE.Quaternion(), []);
+  const aimQ = useRef(new THREE.Quaternion());
+  const aimOn = useRef(false);
+  const crouch = useRef(0);
+  const crouchWas = useRef(false);
+  // Parts of the RENDERED body for the player-only features (rifle aim, crouch).
+  //
+  // Found by walking what is actually mounted (groupRef), not taken from the refs
+  // the rig memo assigns. That memo has side effects, and React Strict Mode runs a
+  // memo twice in development and keeps only one result — so those refs can point
+  // at a duplicate clone that is never drawn (it sits at the world origin). The
+  // existing enemy rifle alignment goes through those refs and is deliberately
+  // left as it is; these new features must hit the body you can see, in dev and
+  // in production alike.
+  type LiveParts = { root: THREE.Object3D; grip: THREE.Object3D | null; gun: THREE.Object3D | null;
+    upL: THREE.Object3D | null; upR: THREE.Object3D | null; legL: THREE.Object3D | null; legR: THREE.Object3D | null;
+    spine: THREE.Object3D | null; ground: THREE.Object3D[] };
+  const live = useRef<LiveParts | null>(null);
+  const liveParts = (): LiveParts | null => {
+    const root = groupRef.current;
+    if (!root) return null;
+    if (live.current && live.current.root === root) return live.current;
+    const p: LiveParts = { root, grip: null, gun: null, upL: null, upR: null, legL: null, legR: null, spine: null, ground: [] };
+    root.traverse((o) => {
+      if (o.userData.valorRifle && !p.gun) { p.gun = o; p.grip = o.parent; }
+      if (!(o as THREE.Bone).isBone) return;
+      const n = o.name;
+      if (!p.upL && /LeftUpLeg$/i.test(n)) p.upL = o;
+      else if (!p.upR && /RightUpLeg$/i.test(n)) p.upR = o;
+      else if (!p.legL && /LeftLeg$/i.test(n)) p.legL = o;
+      else if (!p.legR && /RightLeg$/i.test(n)) p.legR = o;
+      else if (!p.spine && /Spine$/i.test(n)) p.spine = o;
+      if (/(hips|leftfoot|rightfoot|head|leftforearm|rightforearm)$/i.test(n)) p.ground.push(o);
+    });
+    live.current = p;
+    return p;
+  };
   const tmpQ2 = useMemo(() => new THREE.Quaternion(), []);
   const tmpV = useMemo(() => new THREE.Vector3(), []);
 
@@ -338,6 +401,38 @@ export const OperatorRig = forwardRef<OperatorApi, { modelPath: string }>(functi
       // gun.scale.x already holds 1/boneWorldScale.
       gun.position.copy(GUN_POS).applyQuaternion(gun.quaternion).multiplyScalar(gun.scale.x);
       aligned.current = true;
+    }
+
+    // Procedural crouch: bend on top of the clip's pose (the mixer rewrites the
+    // bones every frame, so this is additive per frame, not cumulative), then drop
+    // the body so the lowest foot is back on the floor.
+    const lp = (crouch.current > 0.001 || crouchWas.current || aimOn.current) ? liveParts() : null;
+    const body = lp?.root.children[0] ?? null; // the mounted clone (<primitive object={rig}>)
+    if (lp && body && !dead.current) {
+      const c = crouch.current;
+      if (c > 0.001 && lp.upL && lp.upR && lp.legL && lp.legR) {
+        lp.upL.rotateX(CROUCH_HIP * c); lp.upR.rotateX(CROUCH_HIP * c);
+        lp.legL.rotateX(CROUCH_KNEE * c); lp.legR.rotateX(CROUCH_KNEE * c);
+        if (lp.spine) lp.spine.rotateX(CROUCH_LEAN * c);
+        body.position.y = 0;
+        body.updateMatrixWorld(true);
+        let minY = Infinity;
+        for (const bone of lp.ground) minY = Math.min(minY, bone.getWorldPosition(tmpV).y);
+        if (Number.isFinite(minY)) body.position.y = FLOOR_CLEARANCE - minY;
+        crouchWas.current = true;
+      } else if (crouchWas.current) {
+        body.position.y = 0;
+        crouchWas.current = false;
+      }
+    }
+
+    // Player-held rifle: point the barrel along the live aim every frame. AFTER
+    // the crouch bend, which moves the hands.
+    if (aimOn.current && lp?.gun && lp.grip) {
+      lp.grip.updateWorldMatrix(true, false);
+      lp.grip.getWorldQuaternion(tmpQ);
+      lp.gun.quaternion.copy(tmpQ.invert().multiply(aimQ.current));
+      lp.gun.position.copy(GUN_POS).applyQuaternion(lp.gun.quaternion).multiplyScalar(lp.gun.scale.x);
     }
 
     // A death clip drops the hips toward the floor but nothing re-grounds the rig,

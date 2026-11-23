@@ -59,6 +59,8 @@ import { classifyMoveDir, type MoveDir } from '../animation/AnimationStateMachin
  */
 
 const EYE_STAND = 1.6;
+const ZERO_V = new THREE.Vector3(0, 0, 0);
+const UP_V = new THREE.Vector3(0, 1, 0);
 const EYE_CROUCH = 1.02;
 const PLAYER_R = 0.35;
 
@@ -1229,6 +1231,8 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   const eyeV = useMemo(() => new THREE.Vector3(), []);
   const camDist = useRef(0);   // eased third-person boom length (snaps in, eases out)
   const aimPt = useMemo(() => new THREE.Vector3(), []);
+  const selfAimM = useMemo(() => new THREE.Matrix4(), []);
+  const selfAimQ = useMemo(() => new THREE.Quaternion(), []);
   const teammateRigApis = useRef<Array<OperatorApi | null>>([]);
   const teammateStepDist = useRef<number[]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => 0));
   const teammateStepPos = useRef<[number, number][]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => [0, 0]));
@@ -1503,6 +1507,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     w.__valorXp = () => ({ careerXp: careerXp.current, rank: rankForXp(careerXp.current), intoRank: xpIntoRank(careerXp.current) });
     w.__valorStory = () => ({ fired: [...storyFired.current], queued: voQueue.current.length });
     w.__valorRig = (i = 0) => rigApis.current[i]?.debug() ?? null;
+    w.__valorSelfRig = () => selfRig.current?.debug() ?? null; // third-person body (dev)
     // How far enemy i's skeleton reaches horizontally from where the sim placed it
     // (its collision centre) — e.g. a corpse thrown by the death clip.
     w.__valorBody = (i = 0) => {
@@ -1566,7 +1571,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     return () => {
       delete w.__valorState; delete w.__valorKillAll; delete w.__valorKillRoom; delete w.__valorKillPlayer; delete w.__valorAim; delete w.__valorAudio;
       delete w.__valorMission; delete w.__valorEndless; delete w.__valorWarp; delete w.__valorSkipBriefing;
-      delete w.__valorXp; delete w.__valorSetXp; delete w.__valorStory; delete w.__valorVo; delete w.__valorRig; delete w.__valorBody; delete w.__valorPlayer; delete w.__valorColliders; delete w.__valorCam; delete w.__valorStagger; delete w.__valorHurtBoss; delete w.__valorWakeRoom; delete w.__valorSwitch; delete w.__valorFire; delete w.__valorToggle;
+      delete w.__valorXp; delete w.__valorSetXp; delete w.__valorStory; delete w.__valorVo; delete w.__valorRig; delete w.__valorBody; delete w.__valorSelfRig; delete w.__valorPlayer; delete w.__valorColliders; delete w.__valorCam; delete w.__valorStagger; delete w.__valorHurtBoss; delete w.__valorWakeRoom; delete w.__valorSwitch; delete w.__valorFire; delete w.__valorToggle;
       delete w.__valorRevive; delete w.__valorResupply; delete w.__valorWaveSkip; delete w.__valorPerf;
     };
   }, [sim, audio]);
@@ -1950,13 +1955,17 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
         selfG.rotation.set(0, yaw.current + Math.PI, 0);
         const rig = selfRig.current;
         if (rig) {
+          rig.setCrouch(selfAlive ? crouchCur.current : 0);
           if (!selfAlive) rig.setClip('death');
           else if (!moving) rig.setClip('idle'); // rifle shouldered
           else {
             selfMoveDir.current = classifyMoveDir(mf, ms, selfMoveDir.current);
             const dir = selfMoveDir.current;
-            rig.setClip(dir === 'left' ? 'strafeL' : dir === 'right' ? 'strafeR'
-              : (dir === 'back' || crouchCur.current > 0.5 || adsCur.current > 0.5) ? 'walk' : 'run');
+            if (dir === 'left') rig.setClip('strafeL');
+            else if (dir === 'right') rig.setClip('strafeR');
+            // No walk-backwards clip: the walk played in reverse reads as a back-pedal.
+            else if (dir === 'back') rig.setClip('walk', -1);
+            else rig.setClip(crouchCur.current > 0.5 || adsCur.current > 0.5 ? 'walk' : 'run');
           }
         }
         // Tracers, flash and laser come out of the rifle you can see.
@@ -1972,6 +1981,16 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       const p = aimPoint([cam.position.x, cam.position.y, cam.position.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
       aimPt.set(p[0], p[1], p[2]);
       shotDir = aimDirFromEye([eyeV.x, eyeV.y, eyeV.z], p, shotDir);
+    }
+    // Your soldier's rifle points where the shot will actually go (+Z = barrel),
+    // up and down included. Dead: let go of it and fall with the clip.
+    if (tpp && selfRig.current) {
+      if (selfAlive) {
+        tmp.set(shotDir[0], shotDir[1], shotDir[2]);
+        selfAimM.lookAt(tmp, ZERO_V, UP_V); // object convention: +Z toward the target
+        selfAimQ.setFromRotationMatrix(selfAimM);
+        selfRig.current.setAim(selfAimQ);
+      } else selfRig.current.setAim(null);
     }
 
     // ── Attachments: night vision, optic zoom, flashlight, laser ──
