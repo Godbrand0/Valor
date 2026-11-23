@@ -22,6 +22,10 @@ use crate::services::arena_server::{ClientEntry, InputSample, ServerMsg};
 struct JoinMsg {
     duel_id: Uuid,
     wallet: String,
+    /// The player's session token. Without it anyone who knew a duel id and a
+    /// wallet (the lobby lists both) could join — or forfeit — as that player.
+    #[serde(default)]
+    token: String,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +121,11 @@ pub async fn arena_ws(
                                 continue;
                             }
                             let w = normalize_wallet(&j.wallet);
+                            if let Err(why) = crate::auth::verify_player_token_str(&j.token, &w) {
+                                tracing::warn!("arena_ws: join rejected for {} on duel {}: {}", w, j.duel_id, why);
+                                send_err(&client_tx, why);
+                                continue;
+                            }
 
                             let gate: Option<DuelGate> = sqlx::query_as(
                                 "SELECT challenger_wallet, opponent_wallet, stake_g, status, mode
@@ -140,7 +149,13 @@ pub async fn arena_ws(
                                 send_err(&client_tx, "Not a face-off duel");
                                 continue;
                             }
-                            if gate.status != "accepted" {
+                            // The creator of an OPEN duel may already take the waiting
+                            // slot: that is what Quick Match pairs against (it accepts
+                            // a duel whose creator is waiting here). Nobody else gets
+                            // in until it's accepted — `in_duel` below only knows the
+                            // opponent once accept_duel has recorded them.
+                            let creator_waiting = gate.status == "open" && gate.challenger_wallet == w;
+                            if gate.status != "accepted" && !creator_waiting {
                                 tracing::warn!("arena_ws: join rejected, duel {} status={} not accepted (wallet {})", j.duel_id, gate.status, w);
                                 send_err(&client_tx, "Duel isn't ready to fight yet");
                                 continue;
