@@ -46,9 +46,25 @@ export default function AdminAmbassadorsPage() {
   useEffect(() => { if (token) void load() }, [token, load])
 
   // Suggest real players as the username is typed, so a typo can never be submitted.
+  // A pasted wallet is checked directly instead: new players often have no username
+  // yet (it is optional at signup), so the wallet is the only way to find them.
   useEffect(() => {
     const q = username.trim()
     if (picked || q.length < 2) { setMatches([]); return }
+    if (/^0x[a-fA-F0-9]{40}$/.test(q)) {
+      let cancelled = false
+      void (async () => {
+        try {
+          const res = await fetch(`${API}/players/${q.toLowerCase()}`)
+          if (cancelled) return
+          if (!res.ok) { setMatches([]); return }
+          const p = await res.json() as { username: string | null; character_name: string; wallet_address: string }
+          setPicked(true); setMatches([])
+          setName((n) => n || p.username || p.character_name)
+        } catch { if (!cancelled) setMatches([]) }
+      })()
+      return () => { cancelled = true }
+    }
     const t = setTimeout(async () => {
       try {
         const res = await fetch(`${API}/players/search?q=${encodeURIComponent(q)}`)
@@ -150,10 +166,10 @@ export default function AdminAmbassadorsPage() {
           <section className="flex flex-col gap-3">
             <SectionTitle>Add an ambassador</SectionTitle>
             <div className={`${PANEL} flex flex-col gap-3`}>
-              <p className="text-slate-500 text-xs">They must already have a Valor account and be verified. Use their in-game username.</p>
+              <p className="text-slate-500 text-xs">They must already have a Valor account and be verified. Use their in-game username, or paste their wallet address if they have not set a username.</p>
               <div className="relative flex flex-col gap-1.5">
-                <span className={LABEL}>Player username</span>
-                <input value={username} onChange={(e) => { setUsername(e.target.value); setPicked(false) }} className={INPUT} placeholder="Start typing a username" autoComplete="off" />
+                <span className={LABEL}>Player username or wallet</span>
+                <input value={username} onChange={(e) => { setUsername(e.target.value); setPicked(false) }} className={INPUT} placeholder="Username, or 0x… wallet" autoComplete="off" />
                 {matches.length > 0 && (
                   <ul className="absolute left-0 right-0 top-full mt-1 z-10 rounded-xl border border-valor-border bg-[#0b0b10] overflow-hidden shadow-xl">
                     {matches.map((m) => (
@@ -166,7 +182,7 @@ export default function AdminAmbassadorsPage() {
                     ))}
                   </ul>
                 )}
-                {!picked && username.trim().length >= 2 && matches.length === 0 && <p className="text-[11px] text-red-400">No player found with that name.</p>}
+                {!picked && username.trim().length >= 2 && matches.length === 0 && <p className="text-[11px] text-red-400">No player found. If they have no username yet, paste their wallet address.</p>}
                 {picked && <p className="text-[11px] text-emerald-400">Player found.</p>}
               </div>
               <label className="flex flex-col gap-1.5"><span className={LABEL}>Display name</span>

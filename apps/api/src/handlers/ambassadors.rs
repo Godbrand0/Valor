@@ -8,7 +8,7 @@ use serde_json::json;
 use sqlx::PgPool;
 
 use crate::handlers::admin::verify_admin_token;
-use crate::utils::normalize_wallet;
+use crate::utils::{is_valid_wallet, normalize_wallet};
 use crate::AppState;
 
 fn valid_code(c: &str) -> bool {
@@ -66,7 +66,9 @@ pub struct CreateAmbassador {
     pub name: String,
     #[serde(default)]
     pub location: String,
-    /// The ambassador's player username (they must already be a verified player).
+    /// The ambassador's player: their username OR their wallet address. A wallet is
+    /// accepted because the username is optional at signup, so a brand-new player
+    /// often has none yet and could not be found by name at all.
     pub username: String,
 }
 
@@ -81,11 +83,16 @@ pub async fn admin_create(req: HttpRequest, state: web::Data<AppState>, body: we
     if name.is_empty() || name.len() > 60 {
         return HttpResponse::BadRequest().json(json!({"error": "Name must be 1-60 characters"}));
     }
-    let wallet: Option<String> = sqlx::query_scalar(
-        "SELECT wallet_address FROM players WHERE LOWER(username) = LOWER($1) LIMIT 1",
-    ).bind(body.username.trim()).fetch_optional(&state.db).await.ok().flatten();
+    let who = body.username.trim();
+    let wallet: Option<String> = if is_valid_wallet(who) {
+        sqlx::query_scalar("SELECT wallet_address FROM players WHERE wallet_address = $1")
+            .bind(normalize_wallet(who)).fetch_optional(&state.db).await.ok().flatten()
+    } else {
+        sqlx::query_scalar("SELECT wallet_address FROM players WHERE LOWER(username) = LOWER($1) LIMIT 1")
+            .bind(who).fetch_optional(&state.db).await.ok().flatten()
+    };
     let Some(wallet) = wallet else {
-        return HttpResponse::NotFound().json(json!({"error": "No verified player with that username. They must sign up and verify first."}));
+        return HttpResponse::NotFound().json(json!({"error": "No player with that username or wallet. They must finish signing up (create their character) first."}));
     };
     match sqlx::query("INSERT INTO ambassadors (code, wallet_address, name, location) VALUES ($1, $2, $3, $4)")
         .bind(&code).bind(normalize_wallet(&wallet)).bind(name).bind(body.location.trim())
