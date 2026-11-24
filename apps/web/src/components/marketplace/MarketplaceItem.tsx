@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X } from 'lucide-react'
+import { X, Gift } from 'lucide-react'
+import GiftModal from './GiftModal'
 import type { Item } from '@/types'
 import { ITEM_RARITY_COLORS } from '@/lib/constants'
 import { formatGDollarNumber } from '@/utils/format'
@@ -84,6 +85,7 @@ export default function MarketplaceItem({ item, walletAddress }: Props) {
   const [showConfirm, setShowConfirm] = useState(false)
   const [error, setError]             = useState<string | null>(null)
   const [purchased, setPurchased]     = useState(false)
+  const [gifting, setGifting]         = useState(false)
 
   const rarityColor  = ITEM_RARITY_COLORS[item.rarity]
   const isLimited    = item.total_supply !== null
@@ -234,9 +236,10 @@ export default function MarketplaceItem({ item, walletAddress }: Props) {
           <p className="text-green-400 text-xs">✓ Purchased</p>
         )}
 
-        {/* Action button */}
+        {/* Action button — plus Gift, which works whether or not you own it */}
+        <div className="flex gap-2">
         {alreadyOwned ? (
-          <div className="w-full py-2 text-center text-xs font-bold text-green-400 bg-green-500/10 rounded-lg border border-green-500/20">
+          <div className="flex-1 py-2 text-center text-xs font-bold text-green-400 bg-green-500/10 rounded-lg border border-green-500/20">
             ✓ Owned
           </div>
         ) : (
@@ -244,7 +247,7 @@ export default function MarketplaceItem({ item, walletAddress }: Props) {
             onClick={() => { setError(null); setShowConfirm(true) }}
             disabled={!walletAddress || isSoldOut}
             whileTap={!isSoldOut ? { scale: 0.97 } : {}}
-            className="w-full py-2.5 text-sm font-bold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex-1 py-2.5 text-sm font-bold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
             style={{
               background: isSoldOut ? '#374151' : rarityColor,
               color: isSoldOut ? '#6b7280' : '#000',
@@ -257,7 +260,24 @@ export default function MarketplaceItem({ item, walletAddress }: Props) {
                 : `Buy with ${symbol}`}
           </motion.button>
         )}
+        {walletAddress && !isSoldOut && (
+          <button
+            onClick={() => setGifting(true)}
+            title={`Gift ${item.name} to another player`}
+            aria-label={`Gift ${item.name}`}
+            className="shrink-0 px-3 rounded-lg border border-pink-400/40 text-pink-300 hover:bg-pink-500/10 transition-colors flex items-center gap-1 text-xs font-bold"
+          >
+            <Gift size={14} /> Gift
+          </button>
+        )}
+        </div>
       </motion.div>
+
+      <AnimatePresence>
+        {gifting && walletAddress && (
+          <GiftModal item={item} walletAddress={walletAddress} onClose={() => { setGifting(false); refetchBalance() }} />
+        )}
+      </AnimatePresence>
 
       {/* Confirmation modal */}
       <AnimatePresence>

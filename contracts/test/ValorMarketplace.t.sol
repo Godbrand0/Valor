@@ -355,3 +355,21 @@ contract ValorMarketplaceGiftTest is Test {
         marketplace.giftWithPermit(payer, friend, 99, deadline, 27, bytes32(0), bytes32(0), unlistedSig);
     }
 }
+
+/// @dev Pins giftDigest to the hash the web app signs (viem hashTypedData in
+///      apps/web/src/hooks/useGiftItem.ts) for the same inputs, at the real Celo
+///      proxy address and chain id. If the type string or domain ever drift
+///      apart, every gift would fail with InvalidGiftSignature — this catches it.
+contract ValorMarketplaceGiftDigestTest is Test {
+    function test_GiftDigestMatchesWhatTheWebSigns() public {
+        vm.chainId(42220);
+        address at = 0x95D167f569cf05C967C0432e3123baeac5D8d78D;
+        deployCodeTo("ValorMarketplace.sol:ValorMarketplace", at);
+        bytes32 digest = ValorMarketplace(at).giftDigest(
+            0x1111111111111111111111111111111111111111,
+            0x2222222222222222222222222222222222222222,
+            7, 3, 1800000000
+        );
+        assertEq(digest, 0x63450fb7d15faf242030c2748bc91f35ddb428066c6452831af2d150b0c7ea33);
+    }
+}

@@ -15,6 +15,7 @@ const KIND: Record<string, { Icon: LucideIcon; color: string }> = {
   claim:       { Icon: Gift,          color: '#eab308' },
   campaign:    { Icon: Flag,          color: '#ef4444' },
   drop:        { Icon: Sparkles,      color: '#c084fc' },
+  gift:        { Icon: Gift,          color: '#f472b6' },
 }
 
 function ago(iso: string): string {
