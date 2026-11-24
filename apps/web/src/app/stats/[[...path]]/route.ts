@@ -12,6 +12,12 @@ const SOURCE = 'https://raw.githubusercontent.com/MarvyNwaokobia/Analytics/main/
 const BASE = '/stats/'
 const CACHE_SECONDS = 300
 
+// Always run on request. Left to Next's defaults, this handler was turned into a
+// static page whose fetch cache never refreshed: it kept serving the 23 Nov 10:10
+// feed long after the hourly refresh had published newer ones. Freshness is now
+// owned by one layer only, the CDN, through the Cache-Control header below.
+export const dynamic = 'force-dynamic'
+
 const TYPES: Record<string, string> = {
   html: 'text/html; charset=utf-8',
   json: 'application/json; charset=utf-8',
@@ -30,7 +36,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ path?: string[
   const file = path.length ? path.join('/') : 'index.html'
   if (!ALLOWED.test(file)) return new Response('Not found', { status: 404 })
 
-  const upstream = await fetch(SOURCE + file, { next: { revalidate: CACHE_SECONDS } })
+  const upstream = await fetch(SOURCE + file, { cache: 'no-store' })
   if (!upstream.ok) return new Response('Dashboard unavailable', { status: 502 })
 
   const ext = file.split('.').pop() ?? ''
