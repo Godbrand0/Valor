@@ -61,6 +61,7 @@ pub fn for_ledger(category: &str, amount: Decimal) -> Option<(&'static str, Stri
         "challenge_reward" => ("money", format!("+{g} G$ challenge reward"), "A challenge reward has been paid to you.".to_string(), "/profile"),
         "ubi_claim" => ("transaction", format!("Daily claim: +{g} G$"), "Your daily G$ claim went through.".to_string(), "/profile"),
         "marketplace_purchase" => ("transaction", "Purchase complete".to_string(), format!("{g} G$ spent in the Market."), "/marketplace"),
+        "marketplace_gift" => ("transaction", "Gift sent".to_string(), format!("{g} G$ — your gift has been delivered."), "/marketplace"),
         "transfer_out" => ("transaction", format!("Sent {g} G$"), "Your transfer went through.".to_string(), "/profile"),
         _ => return None,
     };

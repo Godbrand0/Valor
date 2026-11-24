@@ -29,6 +29,8 @@ abigen!(
     ValorMarketplace,
     r#"[
         function purchaseWithPermit(address buyer, uint256 itemId, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external
+        function giftWithPermit(address payer, address recipient, uint256 itemId, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bytes giftSig) external
+        function giftNonces(address payer) external view returns (uint256)
         function withdrawRevenue(address to) external
         function accumulatedRevenue() external view returns (uint256)
     ]"#
@@ -570,6 +572,55 @@ impl ChainWriter {
         .ok_or_else(|| "Transaction was dropped from mempool".to_string())?;
 
         tracing::info!("purchaseWithPermit confirmed: {:?}", hash);
+        Ok(hash)
+    }
+
+    /// Has the marketplace been upgraded to the gifting implementation? Reads
+    /// `giftNonces`, which only exists from that upgrade on — so the API can say
+    /// "gifting guns isn't live yet" instead of spending gas on a call that reverts.
+    pub async fn gifting_live(&self) -> bool {
+        let Some(marketplace) = self.marketplace.as_ref() else { return false };
+        marketplace.gift_nonces(Address::zero()).call().await.is_ok()
+    }
+
+    /// Relay a gift: `payer` pays (their G$ permit), `recipient` receives. The
+    /// contract checks `gift_sig` — the payer's EIP-712 Gift over recipient, item,
+    /// nonce and deadline — so this relay can't redirect it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn gift_item_for(
+        &self,
+        payer: Address,
+        recipient: Address,
+        item_id: u64,
+        deadline: u64,
+        v: u8,
+        r_hex: &str,
+        s_hex: &str,
+        gift_sig_hex: &str,
+    ) -> Result<H256, String> {
+        let marketplace = self
+            .marketplace
+            .as_ref()
+            .ok_or_else(|| "Marketplace relay not configured (MARKETPLACE_CONTRACT unset)".to_string())?;
+        let r: [u8; 32] = H256::from_str(r_hex).map_err(|_| format!("Invalid r: {}", r_hex))?.0;
+        let s: [u8; 32] = H256::from_str(s_hex).map_err(|_| format!("Invalid s: {}", s_hex))?.0;
+        let gift_sig: ethers::types::Bytes = gift_sig_hex.parse().map_err(|_| "Invalid gift signature".to_string())?;
+
+        let call = marketplace.gift_with_permit(
+            payer, recipient, U256::from(item_id), U256::from(deadline), v, r, s, gift_sig,
+        );
+        let pending = {
+            let _tx = self.tx_lock.lock().await;
+            call.send().await.map_err(|e| format!("TX submission failed: {}", e))?
+        };
+        let hash = pending.tx_hash();
+        tracing::info!("giftWithPermit submitted: {:?}", hash);
+        tokio::time::timeout(Duration::from_secs(90), pending.confirmations(1))
+            .await
+            .map_err(|_| "Transaction timed out waiting for confirmation".to_string())?
+            .map_err(|e| format!("Transaction failed on-chain: {}", e))?
+            .ok_or_else(|| "Transaction was dropped from mempool".to_string())?;
+        tracing::info!("giftWithPermit confirmed: {:?}", hash);
         Ok(hash)
     }
 
