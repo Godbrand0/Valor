@@ -121,14 +121,19 @@ export default function Navbar() {
               href="/bank"
               title="Open the Bank — transfer or withdraw"
               aria-label={`G$ balance ${gBalance}. Open the Bank`}
-              className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded transition-colors hover:brightness-125"
+              className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded transition-colors hover:brightness-125 min-w-0"
               style={{
                 background: pathname?.startsWith('/bank') ? 'rgba(234,179,8,0.16)' : 'rgba(234,179,8,0.08)',
                 border: '1px solid rgba(234,179,8,0.2)',
               }}
             >
-              <span className="text-[9px] font-bold text-amber-500/60 uppercase tracking-wider">G$</span>
-              <span className="text-xs font-black text-amber-400">{gBalance}</span>
+              <span className="text-[9px] font-bold text-amber-500/60 uppercase tracking-wider shrink-0">G$</span>
+              {/* The one thing on this side allowed to actually shrink — the
+                  fixed-size icons around it (bell/help/audio/connect) hold
+                  their size via shrink-0 instead, so a long balance degrades
+                  to an ellipsis on a narrow phone rather than pushing the
+                  bar wider than the viewport. */}
+              <span className="text-xs font-black text-amber-400 truncate max-w-[88px] sm:max-w-none">{gBalance}</span>
             </Link>
           )}
 
@@ -156,18 +161,20 @@ export default function Navbar() {
             </Link>
           )}
 
-          <NotificationBell wallet={address} accent={classDef?.accentColor ?? '#eab308'} />
+          <div className="shrink-0">
+            <NotificationBell wallet={address} accent={classDef?.accentColor ?? '#eab308'} />
+          </div>
           <Link
             href="/help"
             title="Help Center"
             aria-label="Help Center"
-            className="flex items-center justify-center w-8 h-8 rounded transition-opacity opacity-50 hover:opacity-100"
+            className="shrink-0 flex items-center justify-center w-8 h-8 rounded transition-opacity opacity-50 hover:opacity-100"
             style={{ color: pathname?.startsWith('/help') ? '#eab308' : undefined }}
           >
             <HelpCircle size={17} />
           </Link>
-          <AudioToggle />
-          <ConnectButton />
+          <div className="shrink-0"><AudioToggle /></div>
+          <div className="shrink-0"><ConnectButton /></div>
         </div>
       </div>
     </nav>
