@@ -144,15 +144,16 @@ pub async fn notify_wallet(
 /// Every event that pushes also lands in the in-app notification bell (`kind`
 /// groups it there), and a player who is online gets a live ping on the chat
 /// socket so their bell updates without waiting for the next poll.
-pub fn notify(state: &crate::AppState, wallet: String, kind: &'static str, body: String, url: &'static str) {
+pub fn notify(state: &crate::AppState, wallet: String, kind: &'static str, body: String, url: impl Into<String>) {
+    let url: String = url.into();
     let push = state.push.clone();
     let db = state.db.clone();
     let hub = state.chat_hub.clone();
     tokio::spawn(async move {
-        crate::services::notifications::record(&db, Some(&wallet), kind, &body, "", Some(url), None).await;
+        crate::services::notifications::record(&db, Some(&wallet), kind, &body, "", Some(&url), None).await;
         crate::services::chat_hub::send_to(&hub, &wallet, serde_json::json!({ "type": "notification" }).to_string());
         if let Some(push) = push {
-            let payload = PushPayload { title: "Valor", body: &body, url };
+            let payload = PushPayload { title: "Valor", body: &body, url: &url };
             notify_wallet(&db, &push, &wallet, &payload).await;
         }
     });

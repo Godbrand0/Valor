@@ -164,6 +164,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::scope("/duels")
                 .route("", web::get().to(duels::list_duels))
                 .route("", web::post().to(duels::create_duel))
+                .route("/quick-match", web::get().to(duels::quick_match))
                 .route("/{id}/accept", web::post().to(duels::accept_duel))
                 .route("/{id}/submit", web::post().to(duels::submit_duel_score))
                 .route("/{id}/cancel", web::post().to(duels::cancel_duel)),
