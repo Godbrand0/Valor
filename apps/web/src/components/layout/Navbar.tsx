@@ -113,17 +113,22 @@ export default function Navbar() {
 
         {/* RIGHT — Balance + character + connect */}
         <div className="flex items-center gap-2.5">
+          {/* The balance IS the way into the Bank — transfer out / withdraw
+              without going through Profile first. Shown on phones too. */}
           {gBalance && (
-            <div
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded"
+            <Link
+              href="/bank"
+              title="Open the Bank — transfer or withdraw"
+              aria-label={`G$ balance ${gBalance}. Open the Bank`}
+              className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded transition-colors hover:brightness-125"
               style={{
-                background: 'rgba(234,179,8,0.08)',
+                background: pathname?.startsWith('/bank') ? 'rgba(234,179,8,0.16)' : 'rgba(234,179,8,0.08)',
                 border: '1px solid rgba(234,179,8,0.2)',
               }}
             >
               <span className="text-[9px] font-bold text-amber-500/60 uppercase tracking-wider">G$</span>
               <span className="text-xs font-black text-amber-400">{gBalance}</span>
-            </div>
+            </Link>
           )}
 
           {player && (
