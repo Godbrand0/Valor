@@ -861,9 +861,9 @@ struct MatchEndInfo {
 /// so this calls the two pieces it's built from directly instead).
 async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     let is_draw = info.winner_wallet.is_none();
-    // A free (friendly) Face-Off moves no G$ and leaves ratings alone, and its XP
-    // can never earn the rank-up G$ bonus (reward_eligible = false) — otherwise two
-    // friends could farm that bonus by playing each other for nothing.
+    // A free (friendly) Face-Off moves no G$, leaves ratings alone, and earns
+    // no XP either — otherwise two wallets (even unrelated-looking ones)
+    // could farm unlimited free XP by just replaying each other for nothing.
     let free = duels::is_free(info.stake_g);
 
     let _ = duels::resolve_live_duel(&app_state, info.duel_id, info.winner_wallet.as_deref()).await;
@@ -872,8 +872,8 @@ async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     let p2_won = !is_draw && info.winner_wallet.as_deref() == Some(info.p2_wallet.as_str());
     let mult1 = battles::equipped_xp_multiplier(&app_state.db, &info.p1_wallet).await;
     let mult2 = battles::equipped_xp_multiplier(&app_state.db, &info.p2_wallet).await;
-    let base1 = if p1_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
-    let base2 = if p2_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
+    let base1 = if free { 0 } else if p1_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
+    let base2 = if free { 0 } else if p2_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
 
     // A draw doesn't add a loss to either player's W/L tally — same reasoning
     // count_result already uses for Endless waves: only a decisive result

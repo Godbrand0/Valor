@@ -580,7 +580,20 @@ impl ChainWriter {
     /// "gifting guns isn't live yet" instead of spending gas on a call that reverts.
     pub async fn gifting_live(&self) -> bool {
         let Some(marketplace) = self.marketplace.as_ref() else { return false };
-        marketplace.gift_nonces(Address::zero()).call().await.is_ok()
+        match marketplace.gift_nonces(Address::zero()).call().await {
+            Ok(_) => true,
+            // A clean revert means the deployed contract genuinely lacks this
+            // function — gifting isn't live yet, the expected "not an error"
+            // case. Anything else (RPC timeout, connection refused, bad
+            // response) is an infra failure, not a product state, so it's
+            // logged loudly instead of silently reusing the same "not live
+            // yet" message a real outage would otherwise hide behind.
+            Err(ethers::contract::ContractError::Revert(_)) => false,
+            Err(e) => {
+                tracing::error!("gifting_live RPC check failed (treating as not-live): {}", e);
+                false
+            }
+        }
     }
 
     /// Relay a gift: `payer` pays (their G$ permit), `recipient` receives. The

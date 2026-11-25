@@ -139,21 +139,31 @@ pub async fn gift_item(
         format!("offchain-gift-{}", Uuid::new_v4())
     };
 
-    // Deliver: the item is theirs now, exactly as if they'd bought it.
-    let _ = sqlx::query(
-        "INSERT INTO inventory (wallet_address, item_id, equipped, acquired_at)
-         VALUES ($1, $2, false, now()) ON CONFLICT (wallet_address, item_id) DO NOTHING",
-    )
-    .bind(&recipient).bind(item_id).execute(&state.db).await;
-    let _ = sqlx::query(
-        "UPDATE items SET remaining_supply = GREATEST(0, remaining_supply - 1) WHERE id = $1 AND remaining_supply IS NOT NULL",
-    )
-    .bind(item_id).execute(&state.db).await;
+    // Deliver: the item is theirs now, exactly as if they'd bought it. The
+    // earlier sold-out/owns checks were only a fast-path rejection — this is
+    // what actually closes the race (shared with the purchase path so a
+    // future fix only has to happen once). By this point an on-chain item's
+    // G$ has already moved, so losing this race means the sender was charged
+    // for nothing — logged loudly since there's no way to reverse that
+    // transfer from here.
+    if crate::handlers::items::deliver_item(&state.db, &recipient, item_id, item.remaining_supply.is_some()).await.is_err() {
+        tracing::error!(
+            "gift delivery lost a race: {} -> {} item {} tx={} — needs a manual refund",
+            sender, recipient, item_id, tx_hash,
+        );
+        return HttpResponse::Conflict().json(json!({
+            "error": "Your gift could not be delivered (sold out or already owned). Contact support for a refund.",
+        }));
+    }
 
+    // `gifts.tx_hash` records a real on-chain hash or nothing — never the
+    // fabricated `offchain-gift-<uuid>` placeholder used for g_ledger below,
+    // so a lookup against this column can't mistake it for a real tx.
+    let gift_tx_hash = item.on_chain_id.is_some().then(|| tx_hash.as_str());
     let gift_id: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO gifts (item_id, from_wallet, to_wallet, message, tx_hash) VALUES ($1, $2, $3, $4, $5) RETURNING id",
     )
-    .bind(item_id).bind(&sender).bind(&recipient).bind(&message).bind(&tx_hash)
+    .bind(item_id).bind(&sender).bind(&recipient).bind(&message).bind(gift_tx_hash)
     .fetch_one(&state.db).await.ok();
 
     crate::handlers::ledger::insert_ledger_entry(
@@ -161,8 +171,11 @@ pub async fn gift_item(
         crate::services::chain_id::ChainId::Celo,
     ).await;
 
+    // GiftUnwrap mounts globally and polls for unseen gifts on its own — no
+    // page reads a `?gifts=1` param, so linking straight to /profile is all
+    // this needs; the unwrap card pops the moment the page loads either way.
     let from_name = display_name(&state.db, &sender).await.unwrap_or_else(|| "A friend".into());
-    notify(&state, recipient.clone(), "gift", format!("{from_name} sent you a gift: {} 🎁", item.name), "/profile?gifts=1");
+    notify(&state, recipient.clone(), "gift", format!("{from_name} sent you a gift: {} 🎁", item.name), "/profile");
 
     if item.on_chain_id.is_some() {
         if let Some(chain) = state.chain.as_ref().cloned() {
