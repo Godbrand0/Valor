@@ -195,23 +195,15 @@ pub async fn purchase_item_relay(
         tx_hash = format!("offchain-{}", item_id);
     }
 
-    // Record inventory + decrement supply
-    let _ = sqlx::query(
-        "INSERT INTO inventory (wallet_address, item_id, equipped, acquired_at)
-         VALUES ($1, $2, false, now())
-         ON CONFLICT (wallet_address, item_id) DO NOTHING",
-    )
-    .bind(&wallet)
-    .bind(item_id)
-    .execute(&state.db)
-    .await;
-
-    let _ = sqlx::query(
-        "UPDATE items SET remaining_supply = GREATEST(0, remaining_supply - 1) WHERE id = $1 AND remaining_supply IS NOT NULL",
-    )
-    .bind(item_id)
-    .execute(&state.db)
-    .await;
+    // Record inventory + decrement supply. By this point an on-chain
+    // purchase's G$ has already moved, so losing this race (astronomically
+    // rare now that the earlier checks were only advisory) means the buyer
+    // was charged for nothing — logged loudly since there's no way to
+    // reverse that transfer from here.
+    if let Err(resp) = deliver_item(&state.db, &wallet, item_id, item.remaining_supply.is_some()).await {
+        tracing::error!("purchase delivery lost a race: {} item {} tx={} — needs a manual refund", wallet, item_id, tx_hash);
+        return resp;
+    }
 
     crate::handlers::ledger::insert_ledger_entry(
         &state.db, &wallet, "marketplace_purchase", charged_price, Some(&tx_hash), None,
@@ -240,4 +232,47 @@ pub async fn purchase_item_relay(
         "wallet_address": wallet,
         "tx_hash": tx_hash,
     }))
+}
+
+/// Grant `item_id` to `wallet` — and, if the item has limited supply,
+/// decrement it — atomically and authoritatively, in one transaction. The
+/// sold-out/already-owned checks callers run earlier are only a fast-path
+/// rejection; this is what actually closes the race between two concurrent
+/// deliveries of the item's last unit, or two concurrent grants of the same
+/// item to the same wallet. Shared by every delivery path (purchase, gift)
+/// so a future fix to this race only has to happen once.
+pub async fn deliver_item(db: &sqlx::PgPool, wallet: &str, item_id: Uuid, limited_supply: bool) -> Result<(), HttpResponse> {
+    let mut tx = match db.begin().await {
+        Ok(t) => t,
+        Err(_) => return Err(HttpResponse::InternalServerError().json(json!({"error": "Database error"}))),
+    };
+
+    if limited_supply {
+        let decremented: Option<bool> = sqlx::query_scalar(
+            "UPDATE items SET remaining_supply = remaining_supply - 1
+             WHERE id = $1 AND remaining_supply > 0
+             RETURNING true",
+        )
+        .bind(item_id).fetch_optional(&mut *tx).await.unwrap_or(None);
+        if decremented != Some(true) {
+            let _ = tx.rollback().await;
+            return Err(HttpResponse::Conflict().json(json!({"error": "Item sold out"})));
+        }
+    }
+
+    let delivered: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO inventory (wallet_address, item_id, equipped, acquired_at)
+         VALUES ($1, $2, false, now()) ON CONFLICT (wallet_address, item_id) DO NOTHING
+         RETURNING item_id",
+    )
+    .bind(wallet).bind(item_id).fetch_optional(&mut *tx).await.unwrap_or(None);
+    if delivered.is_none() {
+        let _ = tx.rollback().await;
+        return Err(HttpResponse::Conflict().json(json!({"error": "Already owned"})));
+    }
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!("item delivery commit failed for {} item {}: {}", wallet, item_id, e);
+        HttpResponse::InternalServerError().json(json!({"error": "Database error"}))
+    })
 }
