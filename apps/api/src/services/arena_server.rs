@@ -487,6 +487,7 @@ impl ArenaServer {
 
     fn create_room(&mut self, e1: ClientEntry, e2: ClientEntry, self_tx: &UnboundedSender<ServerMsg>) {
         let room_id = e1.duel_id.to_string();
+        self.pinged.remove(&e1.duel_id);
         tracing::info!("arena: paired {} vs {} on duel {}", e1.wallet, e2.wallet, e1.duel_id);
 
         send(&e1.tx, json!({
@@ -660,6 +661,7 @@ impl ArenaServer {
                         duel_id: room.duel_id,
                         p1_wallet: room.p1.wallet.clone(),
                         p2_wallet: room.p2.wallet.clone(),
+                        stake_g: room.p1.stake_g,
                         winner_wallet,
                         reason: if timed_out { "timeout" } else { "hp_zero" },
                     });
@@ -706,9 +708,10 @@ impl ArenaServer {
     /// resolves the stake instead of stranding it.
     fn on_leave(&mut self, wallet: &str, self_tx: &UnboundedSender<ServerMsg>) {
         // Not yet paired — just drop the waiting slot if it's theirs.
-        let was_waiting = self.waiting.iter().any(|(_, e)| e.wallet == wallet);
+        let waiting_duel = self.waiting.iter().find(|(_, e)| e.wallet == wallet).map(|(id, _)| *id);
         self.waiting.retain(|_, e| e.wallet != wallet);
-        if was_waiting {
+        if let Some(duel_id) = waiting_duel {
+            self.pinged.remove(&duel_id);
             tracing::info!("arena: {} left the waiting slot before anyone joined", wallet);
         }
 
@@ -772,14 +775,14 @@ impl ArenaServer {
             Some(id) => id.clone(),
             None => return,
         };
-        let (duel_id, p1_wallet, p2_wallet) = match self.rooms.get(&room_id) {
-            Some(r) => (r.duel_id, r.p1.wallet.clone(), r.p2.wallet.clone()),
+        let (duel_id, p1_wallet, p2_wallet, stake_g) = match self.rooms.get(&room_id) {
+            Some(r) => (r.duel_id, r.p1.wallet.clone(), r.p2.wallet.clone(), r.p1.stake_g),
             None => return,
         };
         let winner_wallet = if p1_wallet == wallet { p2_wallet.clone() } else { p1_wallet.clone() };
         tracing::info!("arena: {} settled as {} in room {} — {} wins", wallet, reason, room_id, winner_wallet);
         self.end_room(&room_id, MatchEndInfo {
-            duel_id, p1_wallet, p2_wallet,
+            duel_id, p1_wallet, p2_wallet, stake_g,
             winner_wallet: Some(winner_wallet),
             reason,
         });
@@ -840,6 +843,10 @@ struct MatchEndInfo {
     duel_id: Uuid,
     p1_wallet: String,
     p2_wallet: String,
+    /// The duel's stake, known since room creation — settlement uses this
+    /// instead of re-querying `duels` so a transient DB hiccup can't silently
+    /// mistake a real staked match for a free one.
+    stake_g: i64,
     /// None = draw.
     winner_wallet: Option<String>,
     reason: &'static str,
@@ -857,9 +864,7 @@ async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     // A free (friendly) Face-Off moves no G$ and leaves ratings alone, and its XP
     // can never earn the rank-up G$ bonus (reward_eligible = false) — otherwise two
     // friends could farm that bonus by playing each other for nothing.
-    let stake: i64 = sqlx::query_scalar("SELECT stake_g FROM duels WHERE id = $1")
-        .bind(info.duel_id).fetch_optional(&app_state.db).await.ok().flatten().unwrap_or(0);
-    let free = duels::is_free(stake);
+    let free = duels::is_free(info.stake_g);
 
     let _ = duels::resolve_live_duel(&app_state, info.duel_id, info.winner_wallet.as_deref()).await;
 
