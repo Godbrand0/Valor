@@ -6,6 +6,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import "./ValorItems.sol";
 import "./interfaces/IGoodDollar.sol";
 
@@ -183,6 +184,87 @@ contract ValorMarketplace is IERC677Receiver, OwnableUpgradeable, ReentrancyGuar
         items.mint(buyer, itemId, 1);
 
         emit ItemPurchased(buyer, itemId, price);
+    }
+
+    // ── Gifting ───────────────────────────────────────────────────────────────
+    // One player pays, another receives. Storage appended after every earlier
+    // variable (the resale block above), so the UUPS upgrade is layout-safe.
+    //
+    // The G$ permit only says WHO PAYS and HOW MUCH; it says nothing about who
+    // receives. So the payer also signs an EIP-712 `Gift` naming the recipient
+    // and item, and the contract checks it — a relay (or anyone) submitting the
+    // transaction can't redirect the gift. A per-payer nonce stops a gift
+    // signature being replayed to buy the same gift twice.
+
+    /// payer => next gift nonce
+    mapping(address => uint256) public giftNonces;
+
+    bytes32 public constant GIFT_TYPEHASH =
+        keccak256("Gift(address payer,address recipient,uint256 itemId,uint256 nonce,uint256 deadline)");
+    bytes32 private constant _DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+    event ItemGifted(address indexed payer, address indexed recipient, uint256 indexed itemId, uint256 price);
+
+    error GiftExpired();
+    error InvalidGiftSignature();
+    error CannotGiftSelf();
+    error InvalidRecipient();
+
+    /// @notice EIP-712 domain for `Gift` signatures. Computed on the fly (no
+    ///         stored state, so adding it can't disturb the upgrade layout).
+    function giftDomainSeparator() public view returns (bytes32) {
+        return keccak256(abi.encode(
+            _DOMAIN_TYPEHASH,
+            keccak256(bytes("ValorMarketplace")),
+            keccak256(bytes("1")),
+            block.chainid,
+            address(this)
+        ));
+    }
+
+    /// @notice The digest the payer signs to gift `itemId` to `recipient`.
+    function giftDigest(address payer, address recipient, uint256 itemId, uint256 nonce, uint256 deadline)
+        public view returns (bytes32)
+    {
+        bytes32 structHash = keccak256(abi.encode(GIFT_TYPEHASH, payer, recipient, itemId, nonce, deadline));
+        return keccak256(abi.encodePacked("\x19\x01", giftDomainSeparator(), structHash));
+    }
+
+    /// @notice Gasless gift: `payer` buys `itemId` and it is minted to `recipient`.
+    /// @dev    Same relay shape as purchaseWithPermit (the caller pays gas), plus
+    ///         `giftSig` — the payer's EIP-712 `Gift` signature over the recipient,
+    ///         item, their current gift nonce and `deadline`.
+    function giftWithPermit(
+        address payer,
+        address recipient,
+        uint256 itemId,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        bytes calldata giftSig
+    ) external nonReentrant {
+        if (recipient == address(0)) revert InvalidRecipient();
+        if (recipient == payer) revert CannotGiftSelf();
+        if (block.timestamp > deadline) revert GiftExpired();
+        MarketItem storage listing = listings[itemId];
+        if (!listing.active) revert ItemNotListed();
+
+        uint256 nonce = giftNonces[payer];
+        bytes32 digest = giftDigest(payer, recipient, itemId, nonce, deadline);
+        // EOAs and ERC-1271 smart wallets alike.
+        if (!SignatureChecker.isValidSignatureNow(payer, digest, giftSig)) revert InvalidGiftSignature();
+        giftNonces[payer] = nonce + 1;
+
+        uint256 price = listing.price;
+        IERC20Permit(address(gToken)).permit(payer, address(this), price, deadline, v, r, s);
+        IERC20(address(gToken)).transferFrom(payer, address(this), price);
+
+        accumulatedRevenue += price;
+        items.mint(recipient, itemId, 1);
+
+        emit ItemGifted(payer, recipient, itemId, price);
     }
 
     function listItem(uint256 itemId, uint256 price) external onlyOwner {

@@ -256,3 +256,144 @@ contract ValorMarketplaceTest is Test {
         marketplace.setFeeBps(2001);
     }
 }
+
+/// @dev G$ mock with EIP-2612 `permit`. It grants the allowance without
+///      checking the permit signature: that check is G$'s own job, and these
+///      tests are about the marketplace's GIFT signature.
+contract MockPermitGToken is MockGToken {
+    function permit(address owner_, address spender, uint256 value, uint256, uint8, bytes32, bytes32) external {
+        allowance[owner_][spender] = value;
+    }
+}
+
+contract ValorMarketplaceGiftTest is Test {
+    ValorMarketplace marketplace;
+    ValorItems items;
+    MockPermitGToken gToken;
+
+    address owner = makeAddr("owner");
+    uint256 payerKey = 0xA11CE;
+    address payer;
+    address friend = makeAddr("friend");
+    address stranger = makeAddr("stranger");
+    uint256 constant ITEM_ID = 7;
+    uint256 constant PRICE = 25e18;
+
+    function setUp() public {
+        payer = vm.addr(payerKey);
+        gToken = new MockPermitGToken();
+        ValorItems itemsImpl = new ValorItems();
+        items = ValorItems(address(new ERC1967Proxy(address(itemsImpl), abi.encodeCall(ValorItems.initialize, (owner)))));
+        ValorMarketplace impl = new ValorMarketplace();
+        marketplace = ValorMarketplace(address(new ERC1967Proxy(
+            address(impl), abi.encodeCall(ValorMarketplace.initialize, (address(gToken), address(items), owner))
+        )));
+        vm.startPrank(owner);
+        items.setMarketplace(address(marketplace));
+        items.registerItem(ITEM_ID, 0, "ipfs://marksman");
+        marketplace.listItem(ITEM_ID, PRICE);
+        vm.stopPrank();
+        gToken.mint(payer, 100e18);
+    }
+
+    function _sign(address to, uint256 itemId, uint256 nonce, uint256 deadline) internal view returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, marketplace.giftDigest(payer, to, itemId, nonce, deadline));
+        return abi.encodePacked(r, s, v);
+    }
+
+    function test_GiftChargesThePayerAndMintsToTheRecipient() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _sign(friend, ITEM_ID, 0, deadline);
+        vm.expectEmit(true, true, true, true);
+        emit ValorMarketplace.ItemGifted(payer, friend, ITEM_ID, PRICE);
+        vm.prank(stranger); // anyone (the relay) can submit it
+        marketplace.giftWithPermit(payer, friend, ITEM_ID, deadline, 27, bytes32(0), bytes32(0), sig);
+
+        assertEq(items.balanceOf(friend, ITEM_ID), 1);
+        assertEq(items.balanceOf(payer, ITEM_ID), 0);
+        assertEq(gToken.balanceOf(payer), 100e18 - PRICE);
+        assertEq(marketplace.accumulatedRevenue(), PRICE);
+        assertEq(marketplace.giftNonces(payer), 1);
+    }
+
+    function test_TheSubmitterCannotRedirectAGift() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _sign(friend, ITEM_ID, 0, deadline);
+        vm.expectRevert(ValorMarketplace.InvalidGiftSignature.selector);
+        marketplace.giftWithPermit(payer, stranger, ITEM_ID, deadline, 27, bytes32(0), bytes32(0), sig);
+    }
+
+    function test_AGiftSignatureCannotBeReplayed() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _sign(friend, ITEM_ID, 0, deadline);
+        marketplace.giftWithPermit(payer, friend, ITEM_ID, deadline, 27, bytes32(0), bytes32(0), sig);
+        vm.expectRevert(ValorMarketplace.InvalidGiftSignature.selector);
+        marketplace.giftWithPermit(payer, friend, ITEM_ID, deadline, 27, bytes32(0), bytes32(0), sig);
+        assertEq(items.balanceOf(friend, ITEM_ID), 1);
+    }
+
+    function test_ExpiredSelfAndUnlistedGiftsRevert() public {
+        // Fixed numbers, not block.timestamp: under via_ir the optimizer can
+        // re-read block.timestamp after vm.warp, silently moving the deadline.
+        uint256 deadline = 10_000;
+        bytes memory sig = _sign(friend, ITEM_ID, 0, deadline);
+
+        vm.warp(10_001);
+        vm.expectRevert(ValorMarketplace.GiftExpired.selector);
+        marketplace.giftWithPermit(payer, friend, ITEM_ID, deadline, 27, bytes32(0), bytes32(0), sig);
+        vm.warp(1);
+
+        // Sign first: vm.expectRevert applies to the NEXT external call, and
+        // _sign calls giftDigest.
+        bytes memory selfSig = _sign(payer, ITEM_ID, 0, deadline);
+        bytes memory unlistedSig = _sign(friend, 99, 0, deadline);
+
+        vm.expectRevert(ValorMarketplace.CannotGiftSelf.selector);
+        marketplace.giftWithPermit(payer, payer, ITEM_ID, deadline, 27, bytes32(0), bytes32(0), selfSig);
+
+        vm.expectRevert(ValorMarketplace.ItemNotListed.selector);
+        marketplace.giftWithPermit(payer, friend, 99, deadline, 27, bytes32(0), bytes32(0), unlistedSig);
+    }
+}
+
+/// @dev Pins giftDigest to the hash the web app signs (viem hashTypedData in
+///      apps/web/src/hooks/useGiftItem.ts) for the same inputs, at the real Celo
+///      proxy address and chain id. If the type string or domain ever drift
+///      apart, every gift would fail with InvalidGiftSignature — this catches it.
+contract ValorMarketplaceGiftDigestTest is Test {
+    function test_GiftDigestMatchesWhatTheWebSigns() public {
+        vm.chainId(42220);
+        address at = 0x95D167f569cf05C967C0432e3123baeac5D8d78D;
+        deployCodeTo("ValorMarketplace.sol:ValorMarketplace", at);
+        bytes32 digest = ValorMarketplace(at).giftDigest(
+            0x1111111111111111111111111111111111111111,
+            0x2222222222222222222222222222222222222222,
+            7, 3, 1800000000
+        );
+        assertEq(digest, 0x63450fb7d15faf242030c2748bc91f35ddb428066c6452831af2d150b0c7ea33);
+    }
+}
+
+/// @dev The Celo proxy is still on the purchase-only implementation (initialized
+///      at version 1, no resale). This is the exact upgrade call the script
+///      prints: it must leave resale with its 5% fee and gifting working.
+contract ValorMarketplaceUpgradeCallTest is Test {
+    function test_UpgradeWithInitializeResaleSetsTheFee() public {
+        address owner = makeAddr("owner");
+        ValorMarketplace v1 = new ValorMarketplace();
+        ValorMarketplace proxy = ValorMarketplace(address(new ERC1967Proxy(
+            address(v1), abi.encodeCall(ValorMarketplace.initialize, (address(1), address(2), owner))
+        )));
+        assertEq(proxy.feeBps(), 0);
+
+        ValorMarketplace v2 = new ValorMarketplace();
+        vm.prank(owner);
+        proxy.upgradeToAndCall(address(v2), abi.encodeCall(ValorMarketplace.initializeResale, ()));
+        assertEq(proxy.feeBps(), 500);
+        assertEq(proxy.giftNonces(address(this)), 0);
+
+        // And it can't be run twice.
+        vm.expectRevert();
+        proxy.initializeResale();
+    }
+}

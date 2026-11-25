@@ -24,6 +24,21 @@ struct PlayerClaims {
 /// wallet matches `expected_wallet` (normally the `{wallet}` path segment).
 /// Fails closed: any missing/invalid/expired token or wallet mismatch is an
 /// error response, never a silent pass.
+/// Check a raw player session token (no HTTP request to read it from — e.g. a
+/// WebSocket message). Err carries a short, player-facing reason.
+pub fn verify_player_token_str(token: &str, expected_wallet: &str) -> Result<(), &'static str> {
+    let jwt_secret = std::env::var("PLAYER_JWT_SECRET").map_err(|_| "Player auth not configured")?;
+    let data = decode::<PlayerClaims>(
+        token,
+        &DecodingKey::from_secret(jwt_secret.as_bytes()),
+        &Validation::new(Algorithm::HS256),
+    )
+    .map_err(|_| "Invalid or expired session — sign in again")?;
+    if data.claims.role != "player" { return Err("Not a player session"); }
+    if data.claims.sub != normalize_wallet(expected_wallet) { return Err("Session does not match this wallet"); }
+    Ok(())
+}
+
 pub fn verify_player_token(req: &HttpRequest, expected_wallet: &str) -> Result<(), HttpResponse> {
     let jwt_secret = std::env::var("PLAYER_JWT_SECRET").map_err(|_| {
         HttpResponse::ServiceUnavailable().json(json!({"error": "Player auth not configured"}))
@@ -133,4 +148,26 @@ pub async fn login(req: HttpRequest, state: web::Data<AppState>, body: web::Json
     };
 
     HttpResponse::Ok().json(json!({ "token": token, "wallet": wallet_norm, "expires_at": now + expires_in }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token_for(wallet: &str, secret: &str) -> String {
+        let now = Utc::now().timestamp() as u64;
+        let claims = PlayerClaims { sub: wallet.to_string(), role: "player".into(), exp: now + 3600, iat: now };
+        encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes())).unwrap()
+    }
+
+    #[test]
+    fn a_raw_session_token_only_vouches_for_its_own_wallet() {
+        // The only test in the crate touching this variable, so setting it is safe.
+        unsafe { std::env::set_var("PLAYER_JWT_SECRET", "test-secret"); }
+        let mine = token_for("0xabc", "test-secret");
+        assert!(verify_player_token_str(&mine, "0xABC").is_ok(), "case-insensitive match on the wallet");
+        assert!(verify_player_token_str(&mine, "0xdef").is_err(), "someone else's wallet");
+        assert!(verify_player_token_str(&token_for("0xabc", "wrong"), "0xabc").is_err(), "forged token");
+        assert!(verify_player_token_str("", "0xabc").is_err(), "no token");
+    }
 }

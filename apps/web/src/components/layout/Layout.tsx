@@ -8,6 +8,7 @@ import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useChatSocket } from '@/hooks/useChatSocket'
 import FinishSignIn from './FinishSignIn'
+import GiftUnwrap from './GiftUnwrap'
 
 // Ghost character art that bleeds into the background of every page. Easy one to
 // miss: it is faint, so the old fantasy art sat behind every signed-in screen
@@ -111,6 +112,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </div>
       {/* A wallet in another app (MetaMask on a phone) signs in on a tap. */}
       {address && <FinishSignIn wallet={address} />}
+      {/* A gift someone bought you — shown once, wherever you are. */}
+      {player && address && <GiftUnwrap wallet={address} />}
     </div>
   )
 }

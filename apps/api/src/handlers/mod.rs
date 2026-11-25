@@ -5,6 +5,7 @@ pub mod identity;
 pub mod battles;
 pub mod missions;
 pub mod items;
+pub mod gifts;
 pub mod notifications;
 pub mod decay;
 pub mod duels;
@@ -133,6 +134,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route("/{wallet}/friends/{other}", web::delete().to(friends::remove_friend))
                 .route("/{wallet}/messages/unread-counts", web::get().to(chat::unread_counts))
                 .route("/{wallet}/notifications", web::get().to(notifications::list))
+                .route("/{wallet}/gifts", web::get().to(gifts::list_received))
+                .route("/{wallet}/gifts/seen", web::post().to(gifts::mark_seen))
                 .route("/{wallet}/notifications/seen", web::post().to(notifications::mark_seen))
                 .route("/{wallet}/friends/{other}/messages", web::get().to(chat::list_messages))
                 .route("/{wallet}/friends/{other}/messages", web::post().to(chat::send_message))
@@ -158,12 +161,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::scope("/items")
                 .route("", web::get().to(items::list_items))
                 .route("/{id}/purchase", web::post().to(items::purchase_item))
-                .route("/{id}/purchase-relay", web::post().to(items::purchase_item_relay)),
+                .route("/{id}/purchase-relay", web::post().to(items::purchase_item_relay))
+                .route("/{id}/gift", web::post().to(gifts::gift_item)),
         )
         .service(
             web::scope("/duels")
                 .route("", web::get().to(duels::list_duels))
                 .route("", web::post().to(duels::create_duel))
+                .route("/quick-match", web::get().to(duels::quick_match))
                 .route("/{id}/accept", web::post().to(duels::accept_duel))
                 .route("/{id}/submit", web::post().to(duels::submit_duel_score))
                 .route("/{id}/cancel", web::post().to(duels::cancel_duel)),

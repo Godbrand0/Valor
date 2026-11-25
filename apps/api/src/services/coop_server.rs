@@ -67,7 +67,11 @@ pub enum ServerMsg {
     /// per-wallet, so no server-side coordination is needed here beyond
     /// telling everyone the moment happened.
     WaveCleared { wallet: String, wave: u32 },
-    Leave { wallet: String },
+    /// `deliberate`: the player chose to leave (vs. their connection dropping).
+    Leave { wallet: String, deliberate: bool },
+    /// Fired HOST_RECONNECT_GRACE after a host's connection dropped mid-run.
+    /// Ends the party only if that same absence (`token`) is still unresolved.
+    HostGraceExpired { code: String, token: u64 },
     /// Read-only: every party right now, for the multiplayer lobby.
     LiveSnapshot { reply: tokio::sync::oneshot::Sender<Vec<LiveParty>> },
 }
@@ -106,6 +110,9 @@ struct CoopParty {
     started: bool,
     /// Listed in the multiplayer lobby with its code (see `LiveParty`).
     public: bool,
+    /// Set while the host's connection is down mid-run: which absence this is,
+    /// so a stale grace timer can't end a party the host already came back to.
+    host_away: Option<u64>,
 }
 
 /// No ambiguous characters (0/O, 1/I/L) — this gets read aloud/typed by
@@ -117,6 +124,13 @@ const CODE_LEN: usize = 5;
 /// (the teammate rig pool size) — same "kept in sync by hand, comment on
 /// both sides" discipline arena_server.rs's tuning block already uses.
 const MAX_PARTY_SIZE: usize = 4;
+
+/// How long a started party waits for its HOST to reconnect before ending. The
+/// host's own client runs the fight and keeps doing so through a blip, so when
+/// they're back everyone simply carries on — a flaky phone connection no longer
+/// ends the run for the whole party. (Full hand-over to another member would
+/// need the whole simulation copied mid-wave; this covers the common case.)
+const HOST_RECONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn gen_code() -> String {
     let mut rng = rand::rng();
@@ -131,15 +145,18 @@ struct CoopServer {
     /// `arena_server.rs`'s `player_rooms`, so every non-create/join message
     /// only ever needs to carry a wallet, not a code, to find its party.
     player_party: HashMap<String, String>,
+    /// For scheduling HostGraceExpired. None in unit tests (no `run` loop).
+    self_tx: Option<UnboundedSender<ServerMsg>>,
+    next_token: u64,
 }
 
 impl CoopServer {
     fn new() -> Self {
-        Self { parties: HashMap::new(), player_party: HashMap::new() }
+        Self { parties: HashMap::new(), player_party: HashMap::new(), self_tx: None, next_token: 0 }
     }
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<ServerMsg>, self_tx: UnboundedSender<ServerMsg>) {
-        let _ = &self_tx; // reserved — no self-sent messages yet (no Tick), kept for parity with arena_server.rs's shape
+        self.self_tx = Some(self_tx);
         while let Some(msg) = rx.recv().await {
             self.handle(msg);
         }
@@ -153,7 +170,9 @@ impl CoopServer {
             ServerMsg::HostState { wallet, snapshot } => self.on_host_state(&wallet, snapshot),
             ServerMsg::RemoteInput { wallet, payload } => self.on_remote_input(&wallet, payload),
             ServerMsg::WaveCleared { wallet, wave } => self.on_wave_cleared(&wallet, wave),
-            ServerMsg::Leave { wallet } => self.on_leave(&wallet),
+            ServerMsg::Leave { wallet, deliberate: true } => self.abandon(&wallet),
+            ServerMsg::Leave { wallet, deliberate: false } => self.on_leave(&wallet),
+            ServerMsg::HostGraceExpired { code, token } => self.on_host_grace_expired(&code, token),
             ServerMsg::LiveSnapshot { reply } => { let _ = reply.send(self.live_snapshot()); }
         }
     }
@@ -210,6 +229,7 @@ impl CoopServer {
             seed,
             started: false,
             public,
+            host_away: None,
         });
         self.player_party.insert(wallet.clone(), code.clone());
 
@@ -250,6 +270,9 @@ impl CoopServer {
 
         party.members.insert(wallet.clone(), Member { name: name.clone(), tx: tx.clone() });
         self.player_party.insert(wallet.clone(), code.clone());
+        if reconnecting && party.host_wallet == wallet && party.host_away.take().is_some() {
+            tracing::info!("coop: host {} is back in party {}", wallet, code);
+        }
 
         let roster: Vec<Value> = party.members.iter()
             .map(|(w, m)| json!({ "wallet": w, "name": m.name }))
@@ -363,11 +386,34 @@ impl CoopServer {
     /// party ends outright the moment they're gone.
     fn on_leave(&mut self, wallet: &str) {
         let Some(code) = self.player_party.get(wallet).cloned() else { return };
-        let held_open = self.parties.get(&code)
-            .is_some_and(|p| p.started && p.host_wallet != wallet);
+        let started = self.parties.get(&code).is_some_and(|p| p.started);
+        let is_host = self.parties.get(&code).is_some_and(|p| p.host_wallet == wallet);
 
-        if !held_open {
+        if !started {
             self.abandon(wallet);
+            return;
+        }
+
+        // The HOST dropping mid-run: hold the party for HOST_RECONNECT_GRACE
+        // instead of ending it on the spot.
+        if is_host {
+            self.player_party.remove(wallet);
+            self.next_token += 1;
+            let token = self.next_token;
+            let Some(party) = self.parties.get_mut(&code) else { return };
+            party.host_away = Some(token);
+            tracing::info!("coop: host {} dropped from party {} — holding {}s for reconnect", wallet, code, HOST_RECONNECT_GRACE.as_secs());
+            let msg = json!({ "type": "host_disconnected", "grace_seconds": HOST_RECONNECT_GRACE.as_secs() }).to_string();
+            for (w, m) in party.members.iter() {
+                if w != wallet { send(&m.tx, msg.clone()); }
+            }
+            if let Some(tx) = self.self_tx.clone() {
+                let code = code.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(HOST_RECONNECT_GRACE).await;
+                    let _ = tx.send(ServerMsg::HostGraceExpired { code, token });
+                });
+            }
             return;
         }
 
@@ -378,6 +424,22 @@ impl CoopServer {
         for (w, m) in party.members.iter() {
             if w != wallet { send(&m.tx, msg.clone()); }
         }
+    }
+}
+
+impl CoopServer {
+    /// The host never came back: end the party for everyone, as an immediate
+    /// host departure always did. A no-op if they did come back (token moved on).
+    fn on_host_grace_expired(&mut self, code: &str, token: u64) {
+        let Some(party) = self.parties.get(code) else { return };
+        if party.host_away != Some(token) { return; }
+        tracing::info!("coop: host of party {} didn't reconnect — ending it", code);
+        let msg = json!({ "type": "host_left" }).to_string();
+        for (w, m) in party.members.iter() {
+            if w != &party.host_wallet { send(&m.tx, msg.clone()); }
+            self.player_party.remove(w);
+        }
+        self.parties.remove(code);
     }
 }
 
@@ -700,5 +762,62 @@ mod tests {
         assert!(!snap[1].public);
         assert_eq!(snap[1].host_wallet, "0xPRIV");
         assert!(snap[1].code.is_none());
+    }
+
+    /// Host + one friend, run started, both inboxes drained.
+    fn started_party(server: &mut CoopServer) -> (String, mpsc::UnboundedReceiver<String>, mpsc::UnboundedReceiver<String>) {
+        let (htx, mut hrx) = client();
+        server.on_create_party("0xAAA".into(), "Host".into(), htx);
+        let code = next_json(&mut hrx)["code"].as_str().unwrap().to_string();
+        let (jtx, mut jrx) = client();
+        server.on_join_party(code.clone(), "0xBBB".into(), "Friend".into(), jtx);
+        server.on_start_run("0xAAA");
+        while hrx.try_recv().is_ok() {}
+        while jrx.try_recv().is_ok() {}
+        (code, hrx, jrx)
+    }
+
+    #[test]
+    fn a_host_dropping_mid_run_holds_the_party_and_coming_back_resumes_it() {
+        let mut server = CoopServer::new();
+        let (code, _hrx, mut jrx) = started_party(&mut server);
+
+        server.on_leave("0xAAA");
+        assert!(server.parties.contains_key(&code), "the run must survive a host blip");
+        assert_eq!(next_json(&mut jrx)["type"], "host_disconnected");
+        let token = server.parties[&code].host_away.expect("host marked away");
+
+        let (htx2, mut hrx2) = client();
+        server.on_join_party(code.clone(), "0xAAA".into(), "Host".into(), htx2);
+        assert_eq!(next_json(&mut hrx2)["reconnected"], true);
+        assert_eq!(next_json(&mut jrx)["type"], "member_reconnected");
+        assert!(server.parties[&code].host_away.is_none());
+
+        // The timer from that earlier absence fires late: it must not end the party.
+        server.on_host_grace_expired(&code, token);
+        assert!(server.parties.contains_key(&code));
+    }
+
+    #[test]
+    fn a_host_who_never_comes_back_ends_the_party_after_the_grace() {
+        let mut server = CoopServer::new();
+        let (code, _hrx, mut jrx) = started_party(&mut server);
+        server.on_leave("0xAAA");
+        let _ = next_json(&mut jrx); // host_disconnected
+        let token = server.parties[&code].host_away.unwrap();
+
+        server.on_host_grace_expired(&code, token);
+        assert!(!server.parties.contains_key(&code));
+        assert_eq!(next_json(&mut jrx)["type"], "host_left");
+        assert!(!server.player_party.contains_key("0xBBB"), "members are released to join something else");
+    }
+
+    #[test]
+    fn a_host_choosing_to_leave_still_ends_the_party_at_once() {
+        let mut server = CoopServer::new();
+        let (code, _hrx, mut jrx) = started_party(&mut server);
+        server.handle(ServerMsg::Leave { wallet: "0xAAA".into(), deliberate: true });
+        assert!(!server.parties.contains_key(&code));
+        assert_eq!(next_json(&mut jrx)["type"], "host_left");
     }
 }

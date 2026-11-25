@@ -9,7 +9,7 @@ import { CLASS_DEFINITIONS } from '@/lib/classes'
 import type { CharacterClass } from '@/lib/classes'
 import OperationsSelect from '@/components/battle/OperationsSelect'
 import BattlePvP from '@/components/battle/BattlePvP'
-import ChallengeBattle from '@/components/battle/ChallengeBattle'
+import ChallengePlayer from '@/components/battle/ChallengePlayer'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 import Redirect from '@/components/ui/Redirect'
 
@@ -49,7 +49,7 @@ export default function BattlePage() {
   if (view === 'challenge') {
     return (
       <div className="max-w-2xl mx-auto">
-        <ChallengeBattle
+        <ChallengePlayer
           walletAddress={address}
           onBack={() => router.push('/battle')}
           prefillOpponent={challengeTarget}
@@ -117,7 +117,7 @@ export default function BattlePage() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-display font-black text-white text-xl group-hover:text-amber-400 transition-colors">Challenge a Player</p>
-            <p className="text-slate-500 text-sm mt-0.5">Search by name · Async duel · Share invite link</p>
+            <p className="text-slate-500 text-sm mt-0.5">Live or async · Free or staked · A real fight</p>
           </div>
           <ChevronRight size={16} className="shrink-0 text-slate-700 group-hover:text-white transition-colors" />
         </div>

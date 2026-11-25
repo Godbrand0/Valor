@@ -243,6 +243,9 @@ const FACE_OFF_XP_LOSS: i32 = 30;
 pub struct ClientEntry {
     pub duel_id: Uuid,
     pub wallet: String,
+    /// The other fighter on this duel — told "come and fight" if this one has
+    /// to wait for them (the ready-check; see `on_join`).
+    pub other_wallet: String,
     pub name: String,
     pub stake_g: i64,
     pub tx: UnboundedSender<String>,
@@ -300,6 +303,10 @@ pub enum ServerMsg {
     /// (`handlers/multiplayer.rs`). Answered inline from the room map, so it
     /// never waits on a tick.
     LiveSnapshot { reply: tokio::sync::oneshot::Sender<Vec<LiveMatch>> },
+    /// Duels with a fighter sitting in the arena right now, waiting for their
+    /// opponent — what Quick Match pairs against (`duels::quick_match`), so it
+    /// never matches you with someone who opened a duel and walked away.
+    WaitingSnapshot { reply: tokio::sync::oneshot::Sender<Vec<Uuid>> },
 }
 
 /// One live Face-Off as the lobby shows it: who is fighting and the duel id
@@ -379,6 +386,9 @@ struct ArenaServer {
     // One waiting slot per duel_id — the first player to join sits here until
     // the second arrives (or leaves before they do).
     waiting: HashMap<Uuid, ClientEntry>,
+    /// Duels whose missing fighter has already been pinged, so a flaky
+    /// connection re-joining the waiting slot can't spam them.
+    pinged: std::collections::HashSet<Uuid>,
     rooms: HashMap<String, ArenaRoom>,
     player_rooms: HashMap<String, String>,
     #[allow(dead_code)] // reserved — nothing here persists directly through `db` yet
@@ -390,6 +400,7 @@ impl ArenaServer {
     fn new(db: PgPool, app_state: Arc<OnceLock<AppState>>) -> Self {
         Self {
             waiting: HashMap::new(),
+            pinged: std::collections::HashSet::new(),
             rooms: HashMap::new(),
             player_rooms: HashMap::new(),
             db,
@@ -414,6 +425,7 @@ impl ArenaServer {
             ServerMsg::FightStart { room_id } => self.fight_start(&room_id),
             ServerMsg::Tick => self.on_tick(),
             ServerMsg::LiveSnapshot { reply } => { let _ = reply.send(self.live_snapshot()); }
+            ServerMsg::WaitingSnapshot { reply } => { let _ = reply.send(self.waiting.keys().copied().collect()); }
         }
     }
 
@@ -450,13 +462,32 @@ impl ArenaServer {
             None => {
                 tracing::info!("arena: {} waiting alone on duel {}", entry.wallet, entry.duel_id);
                 send(&entry.tx, json!({ "type": "waiting_for_opponent" }));
+                self.ping_missing_fighter(&entry);
                 self.waiting.insert(entry.duel_id, entry);
             }
         }
     }
 
+    /// The ready-check: someone is in the arena, so tell the other fighter to
+    /// come — bell, live ping and phone push, linking straight into the match.
+    /// Once per duel. A no-op in tests (no AppState) or without a known opponent.
+    fn ping_missing_fighter(&mut self, entry: &ClientEntry) {
+        if entry.other_wallet.is_empty() || !self.pinged.insert(entry.duel_id) { return; }
+        let Some(state) = self.app_state.get().cloned() else { return };
+        let (waiting, other, duel_id) = (entry.wallet.clone(), entry.other_wallet.clone(), entry.duel_id);
+        tokio::spawn(async move {
+            let name = crate::utils::display_name(&state.db, &waiting).await.unwrap_or_else(|| "Your opponent".into());
+            crate::services::push::notify(
+                &state, other, "duel",
+                format!("{name} is in the arena waiting for you — join your Face-Off now"),
+                format!("/faceoff?duel={duel_id}"),
+            );
+        });
+    }
+
     fn create_room(&mut self, e1: ClientEntry, e2: ClientEntry, self_tx: &UnboundedSender<ServerMsg>) {
         let room_id = e1.duel_id.to_string();
+        self.pinged.remove(&e1.duel_id);
         tracing::info!("arena: paired {} vs {} on duel {}", e1.wallet, e2.wallet, e1.duel_id);
 
         send(&e1.tx, json!({
@@ -630,6 +661,7 @@ impl ArenaServer {
                         duel_id: room.duel_id,
                         p1_wallet: room.p1.wallet.clone(),
                         p2_wallet: room.p2.wallet.clone(),
+                        stake_g: room.p1.stake_g,
                         winner_wallet,
                         reason: if timed_out { "timeout" } else { "hp_zero" },
                     });
@@ -676,9 +708,10 @@ impl ArenaServer {
     /// resolves the stake instead of stranding it.
     fn on_leave(&mut self, wallet: &str, self_tx: &UnboundedSender<ServerMsg>) {
         // Not yet paired — just drop the waiting slot if it's theirs.
-        let was_waiting = self.waiting.iter().any(|(_, e)| e.wallet == wallet);
+        let waiting_duel = self.waiting.iter().find(|(_, e)| e.wallet == wallet).map(|(id, _)| *id);
         self.waiting.retain(|_, e| e.wallet != wallet);
-        if was_waiting {
+        if let Some(duel_id) = waiting_duel {
+            self.pinged.remove(&duel_id);
             tracing::info!("arena: {} left the waiting slot before anyone joined", wallet);
         }
 
@@ -742,14 +775,14 @@ impl ArenaServer {
             Some(id) => id.clone(),
             None => return,
         };
-        let (duel_id, p1_wallet, p2_wallet) = match self.rooms.get(&room_id) {
-            Some(r) => (r.duel_id, r.p1.wallet.clone(), r.p2.wallet.clone()),
+        let (duel_id, p1_wallet, p2_wallet, stake_g) = match self.rooms.get(&room_id) {
+            Some(r) => (r.duel_id, r.p1.wallet.clone(), r.p2.wallet.clone(), r.p1.stake_g),
             None => return,
         };
         let winner_wallet = if p1_wallet == wallet { p2_wallet.clone() } else { p1_wallet.clone() };
         tracing::info!("arena: {} settled as {} in room {} — {} wins", wallet, reason, room_id, winner_wallet);
         self.end_room(&room_id, MatchEndInfo {
-            duel_id, p1_wallet, p2_wallet,
+            duel_id, p1_wallet, p2_wallet, stake_g,
             winner_wallet: Some(winner_wallet),
             reason,
         });
@@ -810,6 +843,10 @@ struct MatchEndInfo {
     duel_id: Uuid,
     p1_wallet: String,
     p2_wallet: String,
+    /// The duel's stake, known since room creation — settlement uses this
+    /// instead of re-querying `duels` so a transient DB hiccup can't silently
+    /// mistake a real staked match for a free one.
+    stake_g: i64,
     /// None = draw.
     winner_wallet: Option<String>,
     reason: &'static str,
@@ -824,6 +861,10 @@ struct MatchEndInfo {
 /// so this calls the two pieces it's built from directly instead).
 async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     let is_draw = info.winner_wallet.is_none();
+    // A free (friendly) Face-Off moves no G$, leaves ratings alone, and earns
+    // no XP either — otherwise two wallets (even unrelated-looking ones)
+    // could farm unlimited free XP by just replaying each other for nothing.
+    let free = duels::is_free(info.stake_g);
 
     let _ = duels::resolve_live_duel(&app_state, info.duel_id, info.winner_wallet.as_deref()).await;
 
@@ -831,8 +872,8 @@ async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     let p2_won = !is_draw && info.winner_wallet.as_deref() == Some(info.p2_wallet.as_str());
     let mult1 = battles::equipped_xp_multiplier(&app_state.db, &info.p1_wallet).await;
     let mult2 = battles::equipped_xp_multiplier(&app_state.db, &info.p2_wallet).await;
-    let base1 = if p1_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
-    let base2 = if p2_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
+    let base1 = if free { 0 } else if p1_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
+    let base2 = if free { 0 } else if p2_won { FACE_OFF_XP_WIN } else { FACE_OFF_XP_LOSS };
 
     // A draw doesn't add a loss to either player's W/L tally — same reasoning
     // count_result already uses for Endless waves: only a decisive result
@@ -841,10 +882,10 @@ async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     // Converted to Option immediately: `HttpResponse`'s Err payload isn't
     // Send, and holding it across the next `.await` would make this whole
     // function's future non-Send, which tokio::spawn requires.
-    let award1 = battles::award_player(&app_state, &info.p1_wallet, p1_won, base1, mult1, true, !is_draw).await
+    let award1 = battles::award_player(&app_state, &info.p1_wallet, p1_won, base1, mult1, !free, !is_draw).await
         .map_err(|_| tracing::error!("face-off award_player failed for {}", info.p1_wallet))
         .ok();
-    let award2 = battles::award_player(&app_state, &info.p2_wallet, p2_won, base2, mult2, true, !is_draw).await
+    let award2 = battles::award_player(&app_state, &info.p2_wallet, p2_won, base2, mult2, !free, !is_draw).await
         .map_err(|_| tracing::error!("face-off award_player failed for {}", info.p2_wallet))
         .ok();
 
@@ -861,8 +902,10 @@ async fn settle_face_off_match(app_state: AppState, info: MatchEndInfo) {
     }
 
     // Track + display only for now — no effect on matchmaking or stakes.
-    let p1_outcome = if is_draw { None } else { Some(p1_won) };
-    update_face_off_ratings(&app_state.db, &info.p1_wallet, &info.p2_wallet, p1_outcome).await;
+    if !free {
+        let p1_outcome = if is_draw { None } else { Some(p1_won) };
+        update_face_off_ratings(&app_state.db, &info.p1_wallet, &info.p2_wallet, p1_outcome).await;
+    }
 }
 
 const ELO_K: f64 = 32.0;
@@ -1215,7 +1258,7 @@ mod tests {
 
     fn entry(duel_id: Uuid, wallet: &str) -> (ClientEntry, mpsc::UnboundedReceiver<String>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (ClientEntry { duel_id, wallet: wallet.into(), name: wallet.into(), stake_g: 500, tx }, rx)
+        (ClientEntry { duel_id, wallet: wallet.into(), other_wallet: String::new(), name: wallet.into(), stake_g: 500, tx }, rx)
     }
 
     async fn next_json(rx: &mut mpsc::UnboundedReceiver<String>) -> serde_json::Value {

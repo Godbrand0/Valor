@@ -113,6 +113,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("add_withdraw_fee_discounts.sql", include_str!("../migrations/add_withdraw_fee_discounts.sql")),
     // ALTERs `items` (created_at) — long applied by the time this runs.
     ("add_notifications.sql",     include_str!("../migrations/add_notifications.sql")),
+    // References `items`; long applied by the time this runs.
+    ("add_gifts.sql",             include_str!("../migrations/add_gifts.sql")),
 ];
 
 /// Apply every migration not yet recorded, in order, each in its own transaction. Called

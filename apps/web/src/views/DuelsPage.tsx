@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -9,7 +9,7 @@ import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 import { useActiveWalletClientError } from '@/hooks/useActiveWalletClient'
 import {
-  useDuels, duelScore,
+  useDuels, duelScore, isFree, FREE_STAKE,
   type DuelRun, type DuelResult,
 } from '@/hooks/useDuels'
 import { equippedGunId, equippedAmmoId, equippedAttachments } from '@/lib/guns'
@@ -67,7 +67,7 @@ export default function DuelsPage() {
   const player = usePlayerStore((s) => s.player)
   const playerSynced = usePlayerStore((s) => s.playerSynced)
   const inventory = usePlayerStore((s) => s.inventory)
-  const { duels, loading, pending, signerReady, createDuel, acceptDuel, submitScore, cancelDuel } = useDuels(address)
+  const { duels, loading, pending, signerReady, freeAllowed, createDuel, acceptDuel, submitScore, cancelDuel } = useDuels(address)
   const walletClientError = useActiveWalletClientError()
 
   // Arrived here via "Challenge" on a friend's row in /friends — reserves the
@@ -75,7 +75,10 @@ export default function DuelsPage() {
   const challengeWallet = searchParams.get('challenge')
   const challengeName = searchParams.get('name')
 
-  const [stake, setStake] = useState(1000)
+  // Pre-picked stake from the unified challenge sheet ("0" = free).
+  const linkedStake = searchParams.get('stake')
+  const linkedDuel = searchParams.get('duel')
+  const [stake, setStake] = useState(linkedStake !== null && Number.isFinite(Number(linkedStake)) ? Number(linkedStake) : 1000)
   // The pending stake awaiting explicit confirmation. Nothing is charged until
   // the player acts on this.
   const [confirm, setConfirm] = useState<{ mode: 'create' | 'accept'; stake: number; id?: string; invitedWallet?: string } | null>(null)
@@ -124,6 +127,15 @@ export default function DuelsPage() {
       setError(e instanceof Error ? e.message : 'Could not submit your score — try again')
     } finally { setSubmitting(false) }
   }, [run, submitScore])
+
+  // ?duel=<id> (challenge notifications): open the accept screen for that duel. Once.
+  const handledLink = useRef(false)
+  useEffect(() => {
+    if (!linkedDuel || handledLink.current || !duels) return
+    handledLink.current = true
+    const d = duels.invited.find((x) => x.id === linkedDuel) ?? duels.open.find((x) => x.id === linkedDuel)
+    if (d) setConfirm({ mode: 'accept', stake: d.stake_g, id: d.id })
+  }, [linkedDuel, duels])
 
   if (status === 'loading') return <LoadingScreen />
   if (status === 'unauthenticated' || !address) return <Redirect to="/" />
@@ -189,7 +201,11 @@ export default function DuelsPage() {
   // The stake actually in play. A remembered amount that is not on the ladder the
   // server just quoted would leave nothing highlighted and then be rejected the
   // moment it was submitted. Snap to a real tier instead.
-  const activeStake = tiers.includes(stake) ? stake : (tiers[Math.floor(tiers.length / 2)] ?? stake)
+  const choices = freeAllowed ? [FREE_STAKE, ...tiers] : tiers
+  const activeStake = choices.includes(stake) ? stake : (tiers[Math.floor(tiers.length / 2)] ?? stake)
+  const stakeText = (s: number) => (isFree(s) ? 'Free match · no stake' : `${s.toLocaleString()} ${currency}`)
+  // A free duel needs no stake signature, so a wallet that can't sign doesn't block it.
+  const canStart = (s: number) => !pending && (isFree(s) || signerReady)
   const myOpen = duels?.mine.find((d) => d.status === 'open' && d.challenger.toLowerCase() === address.toLowerCase())
 
   return (
@@ -305,7 +321,7 @@ export default function DuelsPage() {
                 SAME figure, so it has to come from one agreed ladder both sides see.
                 The server enforces the same list. */}
             <div className="grid grid-cols-3 gap-2">
-              {tiers.map((t) => (
+              {choices.map((t) => (
                 <button
                   key={t}
                   onClick={() => setStake(t)}
@@ -316,16 +332,16 @@ export default function DuelsPage() {
                       : 'border-valor-border bg-valor-surface-2 text-slate-300 hover:border-valor-gold/50'
                   }`}
                 >
-                  {t.toLocaleString()}
+                  {isFree(t) ? 'Free' : t.toLocaleString()}
                 </button>
               ))}
             </div>
             <button
               onClick={() => setConfirm({ mode: 'create', stake: activeStake, invitedWallet: challengeWallet ?? undefined })}
-              disabled={pending || !signerReady}
+              disabled={!canStart(activeStake)}
               className="w-full min-h-12 rounded-xl bg-valor-gold text-black font-bold text-sm hover:bg-valor-gold-light transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
             >
-              <Coins size={16} /> Review stake
+              <Coins size={16} /> {isFree(activeStake) ? 'Review free duel' : 'Review stake'}
             </button>
           </div>
         )}
@@ -334,7 +350,37 @@ export default function DuelsPage() {
             The last screen before real money leaves the wallet. It exists so nobody
             can stake by reflex: the amount, what winning pays, what the pool keeps
             and what happens on a draw are all stated before the button that spends. */}
-        {confirm && (
+        {confirm && isFree(confirm.stake) && (
+          <div className="rounded-xl border border-emerald-500/50 bg-valor-surface p-5 flex flex-col gap-3">
+            <p className="font-display font-black text-white text-sm uppercase tracking-wider">
+              {confirm.mode === 'accept' ? 'Accept free duel' : 'Free duel'}
+            </p>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              A friendly race: nothing is staked or paid out. Both fighters run the same map,
+              one life each, whenever suits them — the higher score wins. You still earn XP.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirm(null)} disabled={pending}
+                className="flex-1 min-h-12 rounded-xl border border-valor-border bg-valor-surface-2 text-slate-300 font-bold text-sm hover:text-white transition-colors disabled:opacity-40">
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const c = confirm
+                  setConfirm(null)
+                  if (c.mode === 'create') void onCreate(c.stake, c.invitedWallet)
+                  else void onAccept(c.id!, c.stake)
+                }}
+                disabled={pending}
+                className="flex-1 min-h-12 rounded-xl bg-emerald-500 text-black font-bold text-sm hover:bg-emerald-400 transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {pending ? <><Loader2 className="animate-spin" size={16} /> Starting…</> : confirm.mode === 'accept' ? 'Accept & play' : confirm.invitedWallet ? 'Send challenge' : 'Open free duel'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {confirm && !isFree(confirm.stake) && (
           <div className="rounded-xl border border-valor-gold/50 bg-valor-surface p-5 flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <AlertTriangle className="text-valor-gold shrink-0" size={16} />
@@ -386,7 +432,7 @@ export default function DuelsPage() {
           <div className="rounded-xl border border-valor-gold/30 bg-valor-surface p-5 flex flex-col gap-2">
             <p className="font-display font-black text-white text-sm uppercase tracking-wider">Your open duel</p>
             <p className="text-slate-400 text-sm">
-              {myOpen.stake_g.toLocaleString()} {currency} staked — waiting for someone to accept.
+              {isFree(myOpen.stake_g) ? 'Free duel' : `${myOpen.stake_g.toLocaleString()} ${currency} staked`} — waiting for someone to accept.
             </p>
             {/* Closing is a REFUND, not a payment, so it needs no signature and
                 stays available even when the wallet can't sign. A real button
@@ -397,7 +443,7 @@ export default function DuelsPage() {
               disabled={pending}
               className="mt-1 w-full min-h-12 rounded-xl border border-valor-border bg-valor-surface-2 text-slate-200 font-bold text-sm hover:border-red-500/60 hover:text-red-300 transition-colors disabled:opacity-40"
             >
-              {pending ? 'Closing…' : 'Close duel & refund my stake'}
+              {pending ? 'Closing…' : isFree(myOpen.stake_g) ? 'Close duel' : 'Close duel & refund my stake'}
             </button>
           </div>
         )}
@@ -411,12 +457,12 @@ export default function DuelsPage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-white font-bold text-sm truncate">{who(d.challenger_name, d.challenger)}</p>
                   <p className="text-slate-500 text-[11px]">
-                    {d.stake_g.toLocaleString()} {currency} · winner takes {d.winner_takes_g.toLocaleString()}
+                    {isFree(d.stake_g) ? stakeText(d.stake_g) : `${d.stake_g.toLocaleString()} ${currency} · winner takes ${d.winner_takes_g.toLocaleString()}`}
                   </p>
                 </div>
                 <button
                   onClick={() => setConfirm({ mode: 'accept', stake: d.stake_g, id: d.id })}
-                  disabled={pending || !signerReady}
+                  disabled={!canStart(d.stake_g)}
                   className="shrink-0 px-4 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors disabled:opacity-40"
                 >
                   Accept
@@ -440,12 +486,12 @@ export default function DuelsPage() {
                 <div className="flex-1 min-w-0">
                   <p className="text-white font-bold text-sm truncate">{who(d.challenger_name, d.challenger)}</p>
                   <p className="text-slate-500 text-[11px]">
-                    {d.stake_g.toLocaleString()} {currency} · winner takes {d.winner_takes_g.toLocaleString()}
+                    {isFree(d.stake_g) ? stakeText(d.stake_g) : `${d.stake_g.toLocaleString()} ${currency} · winner takes ${d.winner_takes_g.toLocaleString()}`}
                   </p>
                 </div>
                 <button
                   onClick={() => setConfirm({ mode: 'accept', stake: d.stake_g, id: d.id })}
-                  disabled={pending || !signerReady}
+                  disabled={!canStart(d.stake_g)}
                   className="shrink-0 px-4 min-h-10 rounded-lg bg-valor-gold text-black font-bold text-xs hover:bg-valor-gold-light transition-colors disabled:opacity-40"
                 >
                   Accept
@@ -465,7 +511,7 @@ export default function DuelsPage() {
                 <div key={d.id} className="rounded-xl border border-valor-border bg-valor-surface-2/50 px-4 py-2.5 flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <p className="text-slate-300 text-sm truncate">
-                      vs {who(d.opponent_name, d.opponent)} · {d.stake_g.toLocaleString()} {currency}
+                      vs {who(d.opponent_name, d.opponent)} · {isFree(d.stake_g) ? 'Free' : `${d.stake_g.toLocaleString()} ${currency}`}
                     </p>
                     {d.status === 'resolved' && (
                       <p className="text-slate-500 text-[11px]">{d.challenger_score} — {d.opponent_score}</p>
@@ -487,7 +533,7 @@ export default function DuelsPage() {
         {pickingLoadout && run && (
           <LoadoutModal
             opName="Duel"
-            label={`Loadout · ${run.stake_g.toLocaleString()} ${currency} staked`}
+            label={isFree(run.stake_g) ? 'Loadout · Free duel' : `Loadout · ${run.stake_g.toLocaleString()} ${currency} staked`}
             cta="ENTER THE DUEL"
             walletAddress={address}
             onClose={() => setPickingLoadout(false)}
