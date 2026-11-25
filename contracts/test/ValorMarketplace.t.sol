@@ -373,3 +373,27 @@ contract ValorMarketplaceGiftDigestTest is Test {
         assertEq(digest, 0x63450fb7d15faf242030c2748bc91f35ddb428066c6452831af2d150b0c7ea33);
     }
 }
+
+/// @dev The Celo proxy is still on the purchase-only implementation (initialized
+///      at version 1, no resale). This is the exact upgrade call the script
+///      prints: it must leave resale with its 5% fee and gifting working.
+contract ValorMarketplaceUpgradeCallTest is Test {
+    function test_UpgradeWithInitializeResaleSetsTheFee() public {
+        address owner = makeAddr("owner");
+        ValorMarketplace v1 = new ValorMarketplace();
+        ValorMarketplace proxy = ValorMarketplace(address(new ERC1967Proxy(
+            address(v1), abi.encodeCall(ValorMarketplace.initialize, (address(1), address(2), owner))
+        )));
+        assertEq(proxy.feeBps(), 0);
+
+        ValorMarketplace v2 = new ValorMarketplace();
+        vm.prank(owner);
+        proxy.upgradeToAndCall(address(v2), abi.encodeCall(ValorMarketplace.initializeResale, ()));
+        assertEq(proxy.feeBps(), 500);
+        assertEq(proxy.giftNonces(address(this)), 0);
+
+        // And it can't be run twice.
+        vm.expectRevert();
+        proxy.initializeResale();
+    }
+}

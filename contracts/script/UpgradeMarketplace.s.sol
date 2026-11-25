@@ -10,10 +10,14 @@ import "../src/ValorMarketplace.sol";
 /// NOT upgrade anything itself: it deploys the implementation and prints the
 /// exact `upgradeToAndCall` to propose in the Safe UI.
 ///
-/// Current upgrade: gifting (`giftWithPermit`, `giftNonces`, EIP-712 `Gift`).
-/// Storage is appended only (`giftNonces` takes the next free slot) and needs no
-/// one-off setup, so the call data is empty. Do NOT pass initializeResale again:
-/// it is reinitializer(2), already run on Celo, and would revert.
+/// Current upgrade: brings Celo from the purchase-only implementation (verified
+/// on chain: the live impl has purchaseWithPermit but NO resale functions) to the
+/// current source — player resale AND gifting go live together.
+///
+/// So the call MUST run `initializeResale()` (reinitializer(2), never run on
+/// Celo): it sets the resale platform fee to 5%. Upgrading with empty call data
+/// would open resale with a 0% fee. Gifting needs no setup (giftNonces is an
+/// appended mapping). Storage is append-only throughout.
 ///
 /// Required env vars (contracts/.env or shell):
 ///   DEPLOYER_PRIVATE_KEY   — any funded key; it only deploys the implementation
@@ -39,9 +43,10 @@ contract UpgradeMarketplace is Script {
 
         console.log("New impl: %s", address(newImpl));
         console.log("");
+        bytes memory init = abi.encodeCall(ValorMarketplace.initializeResale, ());
         console.log("Propose in the Safe UI, to the PROXY (%s):", proxy);
-        console.log("  upgradeToAndCall(%s, 0x)", address(newImpl));
+        console.log("  upgradeToAndCall(%s, initializeResale())", address(newImpl));
         console.log("Raw calldata:");
-        console.logBytes(abi.encodeCall(UUPSUpgradeable.upgradeToAndCall, (address(newImpl), "")));
+        console.logBytes(abi.encodeCall(UUPSUpgradeable.upgradeToAndCall, (address(newImpl), init)));
     }
 }
