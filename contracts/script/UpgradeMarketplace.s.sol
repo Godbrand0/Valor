@@ -4,11 +4,23 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 import "../src/ValorMarketplace.sol";
 
-/// @notice Upgrades the ValorMarketplace UUPS proxy to the latest implementation.
-///         Run after adding purchaseWithPermit to ValorMarketplace.sol.
+/// @notice Deploys a new ValorMarketplace implementation for a UUPS upgrade.
+///
+/// The proxy is owned by the Safe (see UPGRADEABILITY.md), so this script does
+/// NOT upgrade anything itself: it deploys the implementation and prints the
+/// exact `upgradeToAndCall` to propose in the Safe UI.
+///
+/// Current upgrade: brings Celo from the purchase-only implementation (verified
+/// on chain: the live impl has purchaseWithPermit but NO resale functions) to the
+/// current source — player resale AND gifting go live together.
+///
+/// So the call MUST run `initializeResale()` (reinitializer(2), never run on
+/// Celo): it sets the resale platform fee to 5%. Upgrading with empty call data
+/// would open resale with a 0% fee. Gifting needs no setup (giftNonces is an
+/// appended mapping). Storage is append-only throughout.
 ///
 /// Required env vars (contracts/.env or shell):
-///   DEPLOYER_PRIVATE_KEY   — must be the proxy owner
+///   DEPLOYER_PRIVATE_KEY   — any funded key; it only deploys the implementation
 ///   MARKETPLACE_CONTRACT   — proxy address (0x95D167f569cf05C967C0432e3123baeac5D8d78D)
 ///   CELO_RPC_URL           — https://forno.celo.org
 ///
@@ -26,20 +38,15 @@ contract UpgradeMarketplace is Script {
         console.log("Deployer: %s", vm.addr(deployerKey));
 
         vm.startBroadcast(deployerKey);
-
-        // Deploy the new implementation
         ValorMarketplace newImpl = new ValorMarketplace();
-        console.log("New impl: %s", address(newImpl));
-
-        // Upgrade the proxy and run the resale reinitializer (sets the default 5% fee).
-        // NOTE: initializeResale is reinitializer(2) — runs once. If this proxy was
-        // already upgraded to a resale impl, pass "" instead to avoid a revert.
-        ValorMarketplace(proxy).upgradeToAndCall(
-            address(newImpl),
-            abi.encodeCall(ValorMarketplace.initializeResale, ())
-        );
-        console.log("Upgraded + resale initialized");
-
         vm.stopBroadcast();
+
+        console.log("New impl: %s", address(newImpl));
+        console.log("");
+        bytes memory init = abi.encodeCall(ValorMarketplace.initializeResale, ());
+        console.log("Propose in the Safe UI, to the PROXY (%s):", proxy);
+        console.log("  upgradeToAndCall(%s, initializeResale())", address(newImpl));
+        console.log("Raw calldata:");
+        console.logBytes(abi.encodeCall(UUPSUpgradeable.upgradeToAndCall, (address(newImpl), init)));
     }
 }

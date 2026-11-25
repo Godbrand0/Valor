@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getPlayerSession, ensurePlayerSession } from '@/lib/playerAuth'
+import { getPlayerSession, signInPlayer } from '@/lib/playerAuth'
 import { useActiveWalletClient } from '@/hooks/useActiveWalletClient'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
@@ -76,7 +76,8 @@ export function useNotifications(wallet: string | undefined) {
   /** Only from a tap on "Sign in" in the panel — the one place the bell may ask for a signature. */
   const signIn = useCallback(async () => {
     if (!wallet) return
-    await ensurePlayerSession(wallet, walletClient)
+    // A real tap — sign straight from it (a wallet in another app needs that).
+    await signInPlayer(wallet, walletClient).catch(() => null)
     void queryClient.invalidateQueries({ queryKey: key })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet, walletClient, queryClient])

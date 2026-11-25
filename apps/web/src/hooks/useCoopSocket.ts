@@ -36,7 +36,7 @@ interface PartyState {
 type Msg =
   | { t: 'CONNECTING' }
   | { t: 'PARTY_CREATED'; code: string; seed: number; wallet: string; name: string }
-  | { t: 'PARTY_JOINED'; code: string; seed: number; hostWallet: string; members: MemberInfo[] }
+  | { t: 'PARTY_JOINED'; code: string; seed: number; hostWallet: string; members: MemberInfo[]; isHost: boolean; reconnected: boolean }
   | { t: 'MEMBER_JOINED'; member: MemberInfo }
   | { t: 'MEMBER_LEFT'; wallet: string }
   | { t: 'MEMBER_DISCONNECTED'; wallet: string }
@@ -56,7 +56,14 @@ function reduce(s: PartyState, a: Msg): PartyState {
     case 'PARTY_CREATED':
       return { ...s, phase: 'lobby', code: a.code, seed: a.seed, isHost: true, hostWallet: a.wallet, members: [{ wallet: a.wallet, name: a.name }] }
     case 'PARTY_JOINED':
-      return { ...s, phase: 'lobby', code: a.code, seed: a.seed, isHost: false, hostWallet: a.hostWallet, members: a.members, pausedWallet: null }
+      // A reconnect into a run already under way stays in it — dropping to
+      // 'lobby' here unmounted the game for whoever came back. And a host
+      // reconnecting (coop_server.rs holds the party for them) is still the host.
+      return {
+        ...s,
+        phase: a.reconnected && s.phase === 'running' ? 'running' : 'lobby',
+        code: a.code, seed: a.seed, isHost: a.isHost, hostWallet: a.hostWallet, members: a.members, pausedWallet: null,
+      }
     case 'MEMBER_JOINED':
       return s.members.some((m) => m.wallet === a.member.wallet) ? s : { ...s, members: [...s.members, a.member] }
     case 'MEMBER_LEFT':
@@ -65,7 +72,9 @@ function reduce(s: PartyState, a: Msg): PartyState {
     case 'MEMBER_RECONNECTED': return s.pausedWallet === a.wallet ? { ...s, pausedWallet: null } : s
     case 'RUN_STARTED': return { ...s, phase: 'running' }
     // The host owns the one authoritative sim (see coop_server.rs's module
-    // doc) — no migration in v1, so this is terminal for everyone else.
+    // doc). The server now holds the party ~20s for a host whose connection
+    // dropped (shown via pausedWallet); this arrives only if they never came
+    // back, or chose to leave — terminal for everyone else.
     case 'HOST_LEFT': return { ...s, phase: 'ended', error: 'The host left the party.' }
     case 'ERROR': return { ...s, error: a.message }
     case 'RESET': return INIT
@@ -79,6 +88,8 @@ function reduce(s: PartyState, a: Msg): PartyState {
  *  invisible to them; only a truly dead connection falls through to the
  *  old reset-to-idle path. */
 const RECONNECT_ATTEMPTS = 4
+/** The host gets longer: coop_server.rs holds the whole party 20s for them. */
+const HOST_RECONNECT_ATTEMPTS = 12
 const RECONNECT_RETRY_MS = 1_500
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -153,6 +164,9 @@ export function useCoopSocket(walletAddress: string) {
 
       switch (msg.type) {
         case 'party_created':
+          // Remember how to get back in: the server now holds a started party
+          // for its host through a dropped connection.
+          lastJoinRef.current = { code: msg.code as string, name: (onOpenMsg.name as string) ?? '' }
           dispatch({
             t: 'PARTY_CREATED', code: msg.code as string, seed: msg.seed as number,
             wallet: walletAddress, name: (onOpenMsg.name as string) ?? '',
@@ -169,6 +183,8 @@ export function useCoopSocket(walletAddress: string) {
           dispatch({
             t: 'PARTY_JOINED', code: msg.code as string, seed: msg.seed as number,
             hostWallet: msg.host_wallet as string, members: msg.members as MemberInfo[],
+            isHost: String(msg.host_wallet).toLowerCase() === walletAddress.toLowerCase(),
+            reconnected: msg.reconnected === true,
           })
           break
 
@@ -184,6 +200,12 @@ export function useCoopSocket(walletAddress: string) {
 
         case 'member_disconnected':
           dispatch({ t: 'MEMBER_DISCONNECTED', wallet: msg.wallet as string })
+          break
+
+        // The host's connection dropped mid-run: the party is held for them
+        // (coop_server.rs), so it's the same "waiting for X" as any teammate.
+        case 'host_disconnected':
+          if (stateRef.current.hostWallet) dispatch({ t: 'MEMBER_DISCONNECTED', wallet: stateRef.current.hostWallet })
           break
 
         case 'run_started':
@@ -221,8 +243,11 @@ export function useCoopSocket(walletAddress: string) {
       // on_leave), so a quick reconnect is invisible to them. The host has
       // no equivalent (see this hook's own module doc): its disconnect
       // already ended the party for everyone by the time this fires.
-      if (!cur.isHost && (cur.phase === 'lobby' || cur.phase === 'running') && lastJoinRef.current) {
-        if (reconnectAttemptsLeft.current === null) reconnectAttemptsLeft.current = RECONNECT_ATTEMPTS
+      // A non-host's seat is held lobby or run; a host's only once the run has
+      // started (before that, leaving the lobby simply closes it).
+      const canRejoin = cur.isHost ? cur.phase === 'running' : (cur.phase === 'lobby' || cur.phase === 'running')
+      if (canRejoin && lastJoinRef.current) {
+        if (reconnectAttemptsLeft.current === null) reconnectAttemptsLeft.current = cur.isHost ? HOST_RECONNECT_ATTEMPTS : RECONNECT_ATTEMPTS
         if (reconnectAttemptsLeft.current > 0) {
           reconnectAttemptsLeft.current -= 1
           const { code, name } = lastJoinRef.current
@@ -255,7 +280,7 @@ export function useCoopSocket(walletAddress: string) {
   /** `isPublic` lists the party (with its code) in the multiplayer lobby so
    *  anyone online can join; private parties stay invite-only. */
   const createParty = useCallback((name: string, isPublic = false) => {
-    lastJoinRef.current = null // nothing to reconnect into as the host — see this hook's module doc
+    lastJoinRef.current = null // set once the server answers party_created
     openSocket({ type: 'create_party', wallet: walletAddress, name, public: isPublic })
   }, [walletAddress, openSocket])
 

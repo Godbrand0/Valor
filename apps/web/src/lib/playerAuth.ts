@@ -1,4 +1,7 @@
 import type { WalletClient } from 'viem'
+import { create } from 'zustand'
+import { getBridgedProvider } from '@/lib/walletBridge'
+import { isMobileBrowser } from '@/lib/mobileWallets'
 
 // Player session — proves ownership of a wallet to the backend (see
 // apps/api/src/auth.rs). Mirrors the admin session in AdminPage.tsx, one
@@ -49,37 +52,145 @@ export function clearPlayerSession() {
 // would each trigger their own signature prompt back to back.
 let pending: Promise<PlayerSession | null> | null = null
 
-export async function ensurePlayerSession(
-  address: string,
-  walletClient: WalletClient | undefined,
-): Promise<PlayerSession | null> {
+/**
+ * Does signing need the player's TAP to reach their wallet?
+ *
+ * A wallet in ANOTHER APP — MetaMask etc. on a phone, connected through
+ * Web3Auth's WalletConnect bridge — only sees a request once that app is brought
+ * to the front, and a phone browser only lets a page open another app in
+ * direct response to a tap. A login signature fired from a background sync
+ * goes out over the relay, nobody opens MetaMask, and it dies as WalletConnect's
+ * "Request expired". So for these wallets the login waits for a tap (the
+ * FinishSignIn banner). Magic (signs in-page) and extensions/in-wallet browsers
+ * (prompt pops over the page) keep signing automatically.
+ */
+export function needsTapToSign(): boolean {
+  return getBridgedProvider()?.source === 'web3auth' && isMobileBrowser()
+}
+
+/** "Sign-in needed" for a tap-to-sign wallet, plus a counter that bumps each
+ *  time a session is created so syncs can re-run. */
+export const useSignInPrompt = create<{ needed: boolean; version: number; setNeeded: (v: boolean) => void; bump: () => void }>((set) => ({
+  needed: false,
+  version: 0,
+  setNeeded: (needed) => set({ needed }),
+  bump: () => set((s) => ({ version: s.version + 1, needed: false })),
+}))
+
+/** Turn a wallet/relay failure into something a player can act on. */
+function describeSignInError(err: unknown): string {
+  const m = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase()
+  if (m.includes('expired') || m.includes('timeout') || m.includes('timed out')) {
+    return "Your wallet didn't answer in time. Tap again, approve in MetaMask, then come back here."
+  }
+  if (m.includes('rejected') || m.includes('denied') || m.includes('cancel')) return 'Sign-in was cancelled in your wallet.'
+  if (m.includes('offline') || m.includes('network') || m.includes('fetch')) return 'Connection problem — check your internet and try again.'
+  return 'Could not sign in — try again.'
+}
+
+/** Sign in, REPORTING why it failed (the FinishSignIn button shows it). */
+export async function signInPlayer(address: string, walletClient: WalletClient | undefined): Promise<PlayerSession> {
   const wallet = address.toLowerCase()
   const existing = getPlayerSession()
   if (existing && existing.wallet === wallet) return existing
-  if (!walletClient?.account) return null
+  if (!walletClient?.account) throw new Error('Your wallet isn\'t connected — reconnect it and try again.')
 
   if (!pending) {
     pending = (async () => {
       try {
         const message = `Valor Player Login\ntimestamp:${Math.floor(Date.now() / 1000)}`
-        const signature = await walletClient.signMessage({ account: walletClient.account!, message })
+        let signature: `0x${string}`
+        try {
+          signature = await walletClient.signMessage({ account: walletClient.account!, message })
+        } catch (err) {
+          throw new Error(describeSignInError(err))
+        }
         const res = await fetch(`${API}/players/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ wallet, message, signature }),
         })
-        if (!res.ok) return null
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({})) as { error?: string }
+          throw new Error(body.error ?? 'Sign-in was refused — try again.')
+        }
         const session: PlayerSession = await res.json()
         storePlayerSession(session)
+        useSignInPrompt.getState().bump()
         return session
-      } catch {
-        return null
       } finally {
         pending = null
       }
     })()
   }
-  return pending
+  const p = pending
+  if (!p) throw new Error('Could not sign in — try again.')
+  const session = await p
+  if (!session) throw new Error('Could not sign in — try again.')
+  return session
+}
+
+/**
+ * Resolves once the FinishSignIn banner's own tap finishes a sign-in for
+ * `wallet` (bump() flips `needed` back to false on success) — or null after
+ * a timeout, since the player might never come back to tap it.
+ */
+function waitForTapSignIn(wallet: string): Promise<PlayerSession | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result: PlayerSession | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
+      unsubscribe()
+      resolve(result)
+    }
+    const timeoutId = setTimeout(() => finish(null), 120_000)
+    const unsubscribe = useSignInPrompt.subscribe((s) => {
+      if (!s.needed) {
+        const session = getPlayerSession()
+        finish(session && session.wallet === wallet ? session : null)
+      }
+    })
+  })
+}
+
+/**
+ * The session for `address`, signing in if needed; null if that isn't possible.
+ *
+ * A tap-to-sign wallet never signs from here — not even from a page's own
+ * button, because a fetch/await between the tap and the signature can lose the
+ * tap, and a request already in flight would swallow the banner's real tap. It
+ * raises the "Finish signing in" banner instead, whose tap calls signInPlayer
+ * directly.
+ *
+ * `background: true` (a silent sync, not a user action — see usePlayerSync)
+ * fails fast: there's no one waiting on a response to retry. Anything else —
+ * the default — is a genuine user tap (Verify, Equip, Claim, …) that's
+ * already waiting on this call, so it waits for the banner's tap instead of
+ * failing it outright; the original request then just goes out with a real
+ * session once that tap lands, instead of leaving the player to notice it
+ * silently failed and repeat their tap from scratch.
+ */
+export async function ensurePlayerSession(
+  address: string,
+  walletClient: WalletClient | undefined,
+  opts: { background?: boolean } = {},
+): Promise<PlayerSession | null> {
+  const wallet = address.toLowerCase()
+  const existing = getPlayerSession()
+  if (existing && existing.wallet === wallet) return existing
+  if (!walletClient?.account) return null
+  if (needsTapToSign()) {
+    useSignInPrompt.getState().setNeeded(true)
+    if (opts.background) return null
+    return await waitForTapSignIn(wallet)
+  }
+  try {
+    return await signInPlayer(address, walletClient)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -94,10 +205,13 @@ export async function authedFetch(
   opts: RequestInit,
   address: string,
   walletClient: WalletClient | undefined,
+  /** Called from a background sync (not a tap): don't make a tap-to-sign
+   *  wallet sign — see needsTapToSign. */
+  authOpts: { background?: boolean } = {},
 ): Promise<Response> {
   let session = getPlayerSession()
   if (!session || session.wallet !== address.toLowerCase()) {
-    session = await ensurePlayerSession(address, walletClient)
+    session = await ensurePlayerSession(address, walletClient, authOpts)
   }
 
   const withAuth = (token: string | undefined) => {
@@ -110,7 +224,7 @@ export async function authedFetch(
   if (res.status !== 401) return res
 
   clearPlayerSession()
-  const retried = await ensurePlayerSession(address, walletClient)
+  const retried = await ensurePlayerSession(address, walletClient, authOpts)
   if (!retried) return res
   return fetch(`${API}${path}`, { ...opts, headers: withAuth(retried.token) })
 }

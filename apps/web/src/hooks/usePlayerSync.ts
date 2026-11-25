@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { usePlayerStore } from '@/stores/usePlayerStore'
 import { useActiveWalletClient } from '@/hooks/useActiveWalletClient'
-import { authedFetch } from '@/lib/playerAuth'
+import { authedFetch, useSignInPrompt } from '@/lib/playerAuth'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'
 const TIMEOUT_MS = 10_000
@@ -13,6 +13,9 @@ function fetchWithTimeout(url: string, signal: AbortSignal) {
 export function usePlayerSync(address: string | undefined) {
   const { setPlayer, setInventory, clearPlayer, setPlayerSynced, setVerified, setSyncFailed } = usePlayerStore()
   const walletClient = useActiveWalletClient()
+  // Bumps when a session is created (e.g. from the FinishSignIn tap), so the
+  // gated inventory read runs again with it.
+  const sessionVersion = useSignInPrompt((s) => s.version)
 
   useEffect(() => {
     if (!address) {
@@ -43,7 +46,9 @@ export function usePlayerSync(address: string | undefined) {
       try {
         const [playerRes, inventoryRes] = await Promise.all([
           fetchWithTimeout(`${API}/players/${wallet}`, controller.signal),
-          authedFetch(`/players/${wallet}/inventory`, { signal: controller.signal }, wallet, walletClient),
+          // Background: never makes a wallet in another app sign without a tap
+          // (that request can't reach it, and expires) — see needsTapToSign.
+          authedFetch(`/players/${wallet}/inventory`, { signal: controller.signal }, wallet, walletClient, { background: true }),
         ])
 
         if (playerRes.ok) {
@@ -83,5 +88,5 @@ export function usePlayerSync(address: string | undefined) {
       controller.abort()
       clearTimeout(timeoutId)
     }
-  }, [address, walletClient, setPlayer, setInventory, clearPlayer, setPlayerSynced, setVerified, setSyncFailed])
+  }, [address, walletClient, sessionVersion, setPlayer, setInventory, clearPlayer, setPlayerSynced, setVerified, setSyncFailed])
 }
