@@ -37,7 +37,7 @@ function AccountMenu({ address, signOut }: { address: string; signOut: () => voi
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition-colors"
+        className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition-colors"
         style={{ background: 'rgba(26,26,40,0.8)', border: '1px solid rgba(42,42,58,0.8)' }}
       >
         <span className="font-mono">{truncate(address)}</span>
