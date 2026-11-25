@@ -131,13 +131,46 @@ export async function signInPlayer(address: string, walletClient: WalletClient |
 }
 
 /**
+ * Resolves once the FinishSignIn banner's own tap finishes a sign-in for
+ * `wallet` (bump() flips `needed` back to false on success) — or null after
+ * a timeout, since the player might never come back to tap it.
+ */
+function waitForTapSignIn(wallet: string): Promise<PlayerSession | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result: PlayerSession | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
+      unsubscribe()
+      resolve(result)
+    }
+    const timeoutId = setTimeout(() => finish(null), 120_000)
+    const unsubscribe = useSignInPrompt.subscribe((s) => {
+      if (!s.needed) {
+        const session = getPlayerSession()
+        finish(session && session.wallet === wallet ? session : null)
+      }
+    })
+  })
+}
+
+/**
  * The session for `address`, signing in if needed; null if that isn't possible.
  *
  * A tap-to-sign wallet never signs from here — not even from a page's own
  * button, because a fetch/await between the tap and the signature can lose the
  * tap, and a request already in flight would swallow the banner's real tap. It
  * raises the "Finish signing in" banner instead, whose tap calls signInPlayer
- * directly. (`background` is kept for callers that want to say so explicitly.)
+ * directly.
+ *
+ * `background: true` (a silent sync, not a user action — see usePlayerSync)
+ * fails fast: there's no one waiting on a response to retry. Anything else —
+ * the default — is a genuine user tap (Verify, Equip, Claim, …) that's
+ * already waiting on this call, so it waits for the banner's tap instead of
+ * failing it outright; the original request then just goes out with a real
+ * session once that tap lands, instead of leaving the player to notice it
+ * silently failed and repeat their tap from scratch.
  */
 export async function ensurePlayerSession(
   address: string,
@@ -148,10 +181,10 @@ export async function ensurePlayerSession(
   const existing = getPlayerSession()
   if (existing && existing.wallet === wallet) return existing
   if (!walletClient?.account) return null
-  void opts
   if (needsTapToSign()) {
     useSignInPrompt.getState().setNeeded(true)
-    return null
+    if (opts.background) return null
+    return await waitForTapSignIn(wallet)
   }
   try {
     return await signInPlayer(address, walletClient)
