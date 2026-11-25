@@ -46,6 +46,16 @@ export default function GiftModal({ item, walletAddress, onClose }: {
     if (!q) return
     setSearching(true)
     try {
+      // A full wallet address: look that player up directly (name search
+      // doesn't match addresses). Gifts only go to existing Valor players.
+      if (/^0x[0-9a-fA-F]{40}$/.test(q)) {
+        if (q.toLowerCase() === walletAddress.toLowerCase()) { setError("That's your own wallet — you can't gift yourself."); return }
+        const res = await fetch(`${API}/players/${q.toLowerCase()}`)
+        if (!res.ok) { setError('No Valor player at that address.'); return }
+        const p = await res.json() as PlayerHit
+        setTo({ wallet: p.wallet_address, name: p.username || p.character_name })
+        return
+      }
       const res = await fetch(`${API}/players/search?q=${encodeURIComponent(q)}&exclude=${walletAddress}`)
       const results = res.ok ? await res.json() as PlayerHit[] : []
       if (!results.length) setError(`No player named "${q}" found.`)
@@ -112,7 +122,7 @@ export default function GiftModal({ item, walletAddress, onClose }: {
                     </div>
                   )}
                   <form onSubmit={(e) => { e.preventDefault(); void search() }} className="flex gap-2">
-                    <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Or search any player"
+                    <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Or search a username or 0x address"
                       aria-label="Search for a player"
                       className="flex-1 min-w-0 min-h-10 px-3 rounded-lg bg-valor-surface-2 border border-valor-border text-white text-sm outline-none focus:border-pink-400/60" />
                     <button type="submit" disabled={searching || !query.trim()} aria-label="Search"
