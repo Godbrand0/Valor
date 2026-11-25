@@ -67,10 +67,10 @@ export default function Navbar() {
           : 'linear-gradient(90deg, transparent 0%, rgba(234,179,8,0.5) 30%, rgba(234,179,8,0.8) 50%, rgba(234,179,8,0.5) 70%, transparent 100%)',
       }}/>
 
-      <div className="container mx-auto px-4 max-w-6xl h-14 flex items-center justify-between">
+      <div className="container mx-auto px-3 sm:px-4 max-w-6xl h-14 flex items-center justify-between gap-2">
 
         {/* LEFT — Logo + nav links */}
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-6 shrink-0">
           <Link
             href="/"
             className="flex items-center gap-2 font-display font-black text-lg tracking-[0.12em] relative"
@@ -85,7 +85,8 @@ export default function Navbar() {
               className="h-7 w-auto"
               style={{ filter: 'drop-shadow(0 0 10px rgba(234,179,8,0.35))' }}
             />
-            VALOR
+            {/* Logo only on a phone held upright — the word crowded the bar. */}
+            <span className="hidden sm:inline">VALOR</span>
           </Link>
 
           <div className="hidden md:flex items-center gap-0.5">
@@ -112,7 +113,7 @@ export default function Navbar() {
         </div>
 
         {/* RIGHT — Balance + character + connect */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
           {/* The balance IS the way into the Bank — transfer out / withdraw
               without going through Profile first. Shown on phones too. */}
           {gBalance && (
