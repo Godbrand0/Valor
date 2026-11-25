@@ -94,6 +94,8 @@ export default function FaceOffPage() {
   const [ammo, setAmmo] = useState(30)
   const [reloading, setReloading] = useState(false)
   const [hitmarker, setHitmarker] = useState<{ id: number; part: 'head' | 'body'; kill: boolean } | null>(null)
+  const [stoppingWait, setStoppingWait] = useState(false)
+  const [stopWaitError, setStopWaitError] = useState<string | null>(null)
   const hitmarkerId = useRef(0)
   const onHit = useCallback((hit: HitEvent) => {
     setHitmarker({ id: ++hitmarkerId.current, part: hit.part, kill: hit.target_hp <= 0 })
@@ -277,11 +279,23 @@ export default function FaceOffPage() {
           pause={arena.state.pause}
           countdown={arena.state.countdown}
           opponentName={opponent ? who(null, opponent.wallet) : 'an opponent'}
+          stoppingWait={stoppingWait}
+          stopWaitError={stopWaitError}
           onStopWaiting={myOpen ? () => {
             // Still nobody — take our open duel down (refunds a stake) and leave.
+            // Stay connected until the cancel actually lands: if an opponent's
+            // accept wins the race, cancelDuel 409s and we're still here to
+            // play the match instead of having already disconnected.
             const id = myOpen.id
-            backToLobby()
-            void cancelDuel(id).catch(() => {})
+            setStopWaitError(null)
+            setStoppingWait(true)
+            void cancelDuel(id).then(() => {
+              setStoppingWait(false)
+              backToLobby()
+            }).catch((e) => {
+              setStoppingWait(false)
+              setStopWaitError(e instanceof Error ? e.message : 'Could not cancel — check if your opponent just joined')
+            })
           } : undefined}
           localHp={localHp} opponentHp={opponentHp}
           ammo={ammo} reloading={reloading}
@@ -360,8 +374,10 @@ export default function FaceOffPage() {
   const choices = freeAllowed ? [FREE_STAKE, ...tiers] : tiers
   const activeStake = choices.includes(stakeChoice) ? stakeChoice : (tiers[Math.floor(tiers.length / 2)] ?? stakeChoice)
   const stakeLabel = (s: number) => (isFree(s) ? 'Free' : `${s.toLocaleString()} ${currency}`)
-  // A free match needs no stake signature, so a wallet that can't sign right now doesn't block it.
-  const canStart = (s: number) => !pending && !searching && (isFree(s) || signerReady)
+  // Free or staked, starting a match still needs a signed session token
+  // (createDuel/acceptDuel both go through ensurePlayerSession) — only the
+  // on-chain stake signature is skippable for a free match.
+  const canStart = (_s: number) => !pending && !searching && signerReady
 
   // Waiting on an opponent to accept our own open challenge.
   if (activeDuel && myOpen) {
@@ -656,7 +672,7 @@ export default function FaceOffPage() {
 
 // ── In-match HUD ──────────────────────────────────────────────────────────
 
-function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp, ammo, reloading, hitmarker, timeLeft, onExit, onStopWaiting }: {
+function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp, ammo, reloading, hitmarker, timeLeft, onExit, onStopWaiting, stoppingWait, stopWaitError }: {
   phase: 'idle' | 'connecting' | 'waiting' | 'countdown' | 'fighting' | 'result'
   pause: { reason: 'opponent_disconnected' | 'reconnecting'; graceSeconds: number } | null
   countdown: number
@@ -670,6 +686,8 @@ function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp
   onExit: () => void
   /** While waiting alone on our own open duel: give up and take it down. */
   onStopWaiting?: () => void
+  stoppingWait?: boolean
+  stopWaitError?: string | null
 }) {
   const [confirmExit, setConfirmExit] = useState(false)
   return (
@@ -722,9 +740,12 @@ function FaceOffHud({ phase, pause, countdown, opponentName, localHp, opponentHp
               </p>
             )}
             {phase === 'waiting' && onStopWaiting && (
-              <button onClick={onStopWaiting} className="mt-1 text-xs text-slate-500 hover:text-red-300 transition-colors">
-                Stop waiting
+              <button onClick={onStopWaiting} disabled={stoppingWait} className="mt-1 text-xs text-slate-500 hover:text-red-300 transition-colors disabled:opacity-50">
+                {stoppingWait ? 'Stopping…' : 'Stop waiting'}
               </button>
+            )}
+            {phase === 'waiting' && stopWaitError && (
+              <p className="text-amber-400 text-xs max-w-xs">{stopWaitError}</p>
             )}
           </div>
         </div>
