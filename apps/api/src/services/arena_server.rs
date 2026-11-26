@@ -453,11 +453,26 @@ impl ArenaServer {
                 .is_some_and(|r| r.disconnected.contains_key(&entry.wallet));
             if is_reconnect {
                 self.reconnect(&room_id, entry);
+            } else {
+                // Same wallet, already fighting on another tab/device. Say so
+                // instead of leaving this connection on "Connecting…" forever.
+                send(&entry.tx, json!({ "type": "error", "message": "You're already in this Face-Off on another tab or device." }));
             }
             return;
         }
 
         match self.waiting.remove(&entry.duel_id) {
+            // The SAME player again — a second tab/device, or tapping Join / a
+            // notification link while already waiting. Never pair a wallet with
+            // itself: that put one player in both seats, standing on top of
+            // their own body, with the client showing the seat that never moved.
+            // Keep the newest connection waiting; tell the older one why it lost it.
+            Some(first) if first.wallet == entry.wallet => {
+                tracing::info!("arena: {} re-joined duel {} while waiting — keeping the newest connection", entry.wallet, entry.duel_id);
+                send(&first.tx, json!({ "type": "error", "message": "You opened this Face-Off on another tab or device — continue there." }));
+                send(&entry.tx, json!({ "type": "waiting_for_opponent" }));
+                self.waiting.insert(entry.duel_id, entry);
+            }
             Some(first) => self.create_room(first, entry, self_tx),
             None => {
                 tracing::info!("arena: {} waiting alone on duel {}", entry.wallet, entry.duel_id);
@@ -1308,6 +1323,34 @@ mod tests {
         (rx1, rx2)
     }
 
+    /// The live bug: one player joining the same duel twice (a second tab or
+    /// device, or Join again while waiting) was paired with ITSELF — both seats
+    /// the same wallet, the client showing the seat that never moved.
+    #[tokio::test]
+    async fn the_same_wallet_joining_twice_is_never_paired_with_itself() {
+        let mut server = new_server();
+        let (self_tx, _self_rx) = mpsc::unbounded_channel();
+        let duel_id = Uuid::new_v4();
+        let (tab1, mut rx_tab1) = entry(duel_id, "0xAAA");
+        let (tab2, mut rx_tab2) = entry(duel_id, "0xAAA");
+        server.on_join(tab1, &self_tx);
+        assert_eq!(next_json(&mut rx_tab1).await["type"], "waiting_for_opponent");
+        server.on_join(tab2, &self_tx);
+
+        assert!(server.rooms.is_empty(), "no room may be created for one player");
+        assert_eq!(next_json(&mut rx_tab1).await["type"], "error", "the older tab is told why");
+        assert_eq!(next_json(&mut rx_tab2).await["type"], "waiting_for_opponent", "the newest tab waits");
+
+        // A real opponent then pairs with the newest connection.
+        let (opp, mut rx_opp) = entry(duel_id, "0xBBB");
+        server.on_join(opp, &self_tx);
+        assert_eq!(server.rooms.len(), 1);
+        let room = server.rooms.values().next().unwrap();
+        assert_ne!(room.p1.wallet, room.p2.wallet);
+        assert_eq!(next_json(&mut rx_tab2).await["type"], "match_found");
+        assert_eq!(next_json(&mut rx_opp).await["type"], "match_found");
+    }
+
     #[tokio::test]
     async fn lobby_snapshot_lists_a_live_match_and_its_players() {
         let mut server = new_server();
@@ -1710,7 +1753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stray_join_from_an_already_seated_wallet_is_ignored() {
+    async fn a_stray_join_from_an_already_seated_wallet_is_refused_with_a_reason() {
         let mut server = new_server();
         let duel_id = Uuid::new_v4();
         let (self_tx, _self_rx) = mpsc::unbounded_channel();
@@ -1720,7 +1763,8 @@ mod tests {
         let (dupe, mut rx3) = entry(duel_id, "0xAAA");
         server.on_join(dupe, &self_tx);
         assert_eq!(server.rooms.len(), 1, "a reseat attempt must not spawn a second room");
-        assert!(rx3.try_recv().is_err(), "the stray duplicate connection gets nothing");
+        // It used to get nothing and sit on "Connecting…" forever.
+        assert_eq!(next_json(&mut rx3).await["type"], "error", "the duplicate is told it's already in the match elsewhere");
     }
 
     #[tokio::test]

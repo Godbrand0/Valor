@@ -86,6 +86,9 @@ type Msg =
   | { t: 'END'; result: MatchResult }
   | { t: 'RESET' }
   | { t: 'ERROR'; message: string }
+  /** The server refused us before the match began (e.g. the same account
+   *  joined from another tab): stop waiting and show why. */
+  | { t: 'FAIL'; message: string }
   | { t: 'OPPONENT_DISCONNECTED'; graceSeconds: number }
   | { t: 'OPPONENT_RECONNECTED' }
   | { t: 'SELF_RECONNECTING'; graceSeconds: number }
@@ -110,6 +113,7 @@ function reduce(s: ArenaState, a: Msg): ArenaState {
     case 'END':          return { ...s, phase: 'result', result: a.result, pause: null }
     case 'RESET':         return INIT
     case 'ERROR':          return { ...s, error: a.message }
+    case 'FAIL':           return { ...INIT, error: a.message }
     case 'OPPONENT_DISCONNECTED': return { ...s, pause: { reason: 'opponent_disconnected', graceSeconds: a.graceSeconds } }
     case 'OPPONENT_RECONNECTED':  return { ...s, pause: null }
     case 'SELF_RECONNECTING':     return { ...s, pause: { reason: 'reconnecting', graceSeconds: a.graceSeconds } }
@@ -223,6 +227,14 @@ export function useArenaSocket(walletAddress: string) {
         case 'match_found': {
           clearStuckTimer()
           const opp = msg.opponent as OpponentInfo
+          // Never fight yourself. The server refuses to pair a wallet with itself
+          // now; this guards an older server (that put one player in both seats).
+          if (opp?.wallet?.toLowerCase() === walletAddress.toLowerCase()) {
+            intentionalRef.current = true
+            socket.close()
+            dispatch({ t: 'FAIL', message: 'This Face-Off was joined twice from your own account. Close the other tab or device, then tap Join again.' })
+            break
+          }
           const countdown = (msg.countdown as number) ?? 3
           dispatch({ t: 'MATCH_FOUND', opponent: opp, countdown })
           let count = countdown
@@ -283,10 +295,19 @@ export function useArenaSocket(walletAddress: string) {
           break
         }
 
-        case 'error':
+        case 'error': {
           clearStuckTimer()
-          dispatch({ t: 'ERROR', message: msg.message as string })
+          const cur = stateRef.current.phase
+          if (cur === 'connecting' || cur === 'waiting') {
+            // Refused before the fight started — don't sit on "Waiting…".
+            intentionalRef.current = true
+            socket.close()
+            dispatch({ t: 'FAIL', message: msg.message as string })
+          } else {
+            dispatch({ t: 'ERROR', message: msg.message as string })
+          }
           break
+        }
       }
     }
 
