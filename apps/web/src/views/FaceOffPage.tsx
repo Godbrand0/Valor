@@ -114,18 +114,28 @@ export default function FaceOffPage() {
     return () => clearInterval(id)
   }, [arena.state.phase])
 
+  // True from the moment we start entering until connected (or it fails).
+  // Entering awaits the session; without this the "accepted → pick a loadout"
+  // effect below re-opened the loadout in that gap, a second Deploy opened a
+  // second socket, and the arena seated this player in BOTH seats.
+  const entering = useRef(false)
   const enterArena = useCallback(async () => {
-    if (!activeDuel || !address) return
+    if (!activeDuel || !address || entering.current) return
+    entering.current = true
     setPickingLoadout(false)
-    // The arena only seats a player who proves the wallet is theirs (session
-    // token in the join message), so make sure a session exists first.
-    const session = await ensurePlayerSession(address, walletClient)
-    if (!session) {
-      setError('Sign in with your wallet to enter the arena, then tap Join.')
-      return
+    try {
+      // The arena only seats a player who proves the wallet is theirs (session
+      // token in the join message), so make sure a session exists first.
+      const session = await ensurePlayerSession(address, walletClient)
+      if (!session) {
+        setError('Sign in with your wallet to enter the arena, then tap Join.')
+        return
+      }
+      arena.connect(activeDuel.id)
+      setConnected(true)
+    } finally {
+      entering.current = false
     }
-    arena.connect(activeDuel.id)
-    setConnected(true)
   }, [activeDuel, address, walletClient, arena])
 
   /** Back into one of our own accepted Face-Offs — after leaving the page, or
@@ -178,7 +188,7 @@ export default function FaceOffPage() {
   // a fallback, not the only signal). The accepter already knows immediately
   // (acceptDuel's response) and connects directly instead of via this effect.
   useEffect(() => {
-    if (!activeDuel || connected || pickingLoadout) return
+    if (!activeDuel || connected || pickingLoadout || entering.current) return
     const mine = myFaceOff.find((d) => d.id === activeDuel.id)
     if (mine?.status === 'accepted') setPickingLoadout(true)
   }, [activeDuel, connected, pickingLoadout, myFaceOff])

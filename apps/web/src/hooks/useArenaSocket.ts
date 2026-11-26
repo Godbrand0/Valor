@@ -207,6 +207,8 @@ export function useArenaSocket(walletAddress: string) {
     }
 
     socket.onmessage = (e) => {
+      // A socket we've since replaced (a reconnect) must not drive this match.
+      if (ws.current !== socket) return
       let msg: Record<string, unknown>
       try { msg = JSON.parse(e.data as string) }
       catch { return }
@@ -312,6 +314,7 @@ export function useArenaSocket(walletAddress: string) {
     }
 
     socket.onclose = () => {
+      if (ws.current !== socket) return
       clearStuckTimer()
       if (intentionalRef.current) return // our own disconnect()/forfeit() — nothing to recover
 
@@ -347,6 +350,7 @@ export function useArenaSocket(walletAddress: string) {
     }
 
     socket.onerror = () => {
+      if (ws.current !== socket) return
       clearStuckTimer()
       // Mid-match, a retry is already scheduled from onclose (every browser
       // fires close after error) — don't also surface a terminal error here.
@@ -359,7 +363,10 @@ export function useArenaSocket(walletAddress: string) {
   openSocketRef.current = openSocket
 
   const connect = useCallback((duelId: string) => {
-    if (ws.current?.readyState === WebSocket.OPEN) return
+    // Still CONNECTING counts too: a second connect in that window opened a
+    // second socket, and two joins from one wallet ended up in both seats.
+    const rs = ws.current?.readyState
+    if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return
     duelIdRef.current = duelId
     clearReconnectRetry()
     openSocket(duelId, false)
