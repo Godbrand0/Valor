@@ -235,7 +235,7 @@ pub async fn get_pools(state: web::Data<AppState>) -> HttpResponse {
     }))
 }
 
-fn wei_to_g(amount: U256) -> Decimal {
+pub(crate) fn wei_to_g(amount: U256) -> Decimal {
     Decimal::from_str(&amount.to_string()).unwrap_or(Decimal::ZERO) / Decimal::from(10u64.pow(18))
 }
 
