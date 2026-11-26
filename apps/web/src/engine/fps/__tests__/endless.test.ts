@@ -276,6 +276,26 @@ describe('streaming into a live sim', () => {
     expect(live.length).toBe(room.walls.length); // same array, seen without re-reading
   });
 
+  it('pruneDeadBefore (co-op) drops only the dead behind, keeping a lagging teammate\'s live enemies', () => {
+    const rooms = buildChain(0, 6, CHAIN_START_Z, 11);
+    const sim = simWithChain(rooms);
+    for (const e of sim.getEnemies().filter((x) => x.room === 1)) e.alive = false; // cleared room
+    const liveIn2 = sim.getEnemies().filter((e) => e.room === 2 && e.alive).length; // teammate still here
+    const coverBefore = sim.getCover().length;
+
+    sim.pruneDeadBefore(4);
+
+    expect(sim.getEnemies().some((e) => e.room === 1)).toBe(false);
+    expect(sim.getEnemies().filter((e) => e.room === 2 && e.alive).length).toBe(liveIn2);
+    expect(sim.getEnemies().every((e) => e.room >= 4 || e.alive)).toBe(true);
+    // Walls are untouched: the rooms stay standing, which is the whole point.
+    expect(sim.getCover().length).toBe(coverBefore);
+    // spawns stays index-aligned with enemies (reinforce reads both).
+    sim.setRoomActive(4, true);
+    for (const e of sim.getEnemies().filter((x) => x.room === 4)) e.alive = false;
+    expect(sim.reinforce(4, 1)).toBe(1);
+  });
+
   it('pruneBehind drops old rooms and keeps enemies/spawns aligned', () => {
     const rooms = buildChain(0, 6, CHAIN_START_Z, 11);
     const sim = simWithChain(rooms);
