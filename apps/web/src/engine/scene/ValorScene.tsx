@@ -2476,8 +2476,8 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
           const dir: Vec3 = [pose.dirX / dirLen, pose.dirY / dirLen, pose.dirZ / dirLen];
           const origin: Vec3 = [rx + dir[0] * 0.6, eyeY - 0.15, rz + dir[2] * 0.6];
           const targets = liveEnemies.map((e) => ({ x: e.x, z: e.z, alive: e.alive }));
-          const hit = aimPoint(origin, dir, origin, sim.getCover(), targets);
-          spawnBeam(tmp2.set(origin[0], origin[1], origin[2]), hit, false);
+          const hit = aimPointInfo(origin, dir, origin, sim.getCover(), targets);
+          spawnBeam(tmp2.set(origin[0], origin[1], origin[2]), hit.point, false);
           audio.enemyShot([rx, eyeY, rz]);
         }
       }
