@@ -196,6 +196,10 @@ export function useCoopSocket(walletAddress: string) {
 
         case 'member_left':
           dispatch({ t: 'MEMBER_LEFT', wallet: msg.wallet as string })
+          // Their last reported position/pose would otherwise sit in here
+          // forever — a frozen ghost teammate, and (now that room-pruning
+          // reads this map too) rooms held behind them that should free up.
+          latestPeerInputs.current.delete(msg.wallet as string)
           break
 
         case 'member_disconnected':

@@ -1403,6 +1403,19 @@ export class FpsSim {
     }
   }
 
+  /** Drop the BODIES of enemies already dead in rooms before `room`, keeping
+   *  the living. Co-op keeps rooms a lagging teammate is still in (geometry and
+   *  their live enemies), but the corpses back there would otherwise pile up
+   *  past the scene's fixed rig pool and leave the newest enemies bodiless. */
+  pruneDeadBefore(room: number): void {
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      if (this.enemies[i].room < room && !this.enemies[i].alive) {
+        this.enemies.splice(i, 1);
+        this.spawns.splice(i, 1); // parallel array — must stay index-aligned
+      }
+    }
+  }
+
   // ── Co-op Endless (party mode) — see `ValorScene`'s `coop` prop ────────────
 
   /** Registers or updates a teammate as a live AI target — called once per

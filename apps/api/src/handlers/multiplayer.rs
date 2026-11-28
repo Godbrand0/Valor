@@ -123,9 +123,19 @@ pub async fn live(state: web::Data<AppState>) -> HttpResponse {
         for w in &p.members { in_party.insert(normalize_wallet(w), p); }
     }
 
+    // Who counts as online: anyone with the app open (the chat hub) PLUS anyone
+    // in a live Face-Off or a co-op party. Full-screen game pages (co-op lives at
+    // /endless/coop, outside the app layout) don't hold the chat socket, so a
+    // player mid-run used to vanish from the list while their party showed them.
+    let mut present: Vec<String> = online.clone();
+    let mut seen: HashSet<String> = online.iter().cloned().collect();
+    for w in in_match.keys().chain(in_party.keys()) {
+        if seen.insert(w.clone()) { present.push(w.clone()); }
+    }
+
     // Only registered players are listed (a hub entry with no player row is a
     // half-finished signup).
-    let mut listed: Vec<(u8, Value)> = online.iter().filter(|w| people.contains_key(*w)).map(|w| {
+    let mut listed: Vec<(u8, Value)> = present.iter().filter(|w| people.contains_key(*w)).map(|w| {
         let mut v = person(w);
         let obj = v.as_object_mut().expect("person is an object");
         let rank_order: u8;
