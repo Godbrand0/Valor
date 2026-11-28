@@ -35,9 +35,10 @@ import { dressingFor, dressingColliders, type PropSpec } from './setDressing';
 import { useSurvivalRearm, NeedArmError, type RearmAction } from '@/hooks/useSurvivalRearm';
 import { useGauntlet, type GauntletBoardRow, type SeasonInfo } from '@/hooks/useGauntlet';
 import { AIM_DEFAULTS, SENS_MIN, SENS_MAX, SMOOTH_RATE, loadAimSettings, saveAimSettings, type AimSettings, type AimSmoothing } from '../input/aimSettings';
+import { loadSoundSettings, saveSoundSettings, type SoundSettings } from '../audio/soundSettings';
 import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout } from '../input/controlLayout';
 import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
-import { placeCamera, aimPoint, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
+import { placeCamera, aimPointInfo, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
 import type { MoveDir } from '../animation/AnimationStateMachine';
 import { driveOperatorLocomotion, aimOperatorAlong, localToWorldXZ, worldToLocalFwdRight } from './operatorLocomotion';
 
@@ -355,7 +356,7 @@ const QUALITY_OPTIONS = [
  * Pause-menu SETTINGS page: graphics, aim speeds and (on touch) the button layout.
  * Every value applies live, so RESUME is the test.
  */
-function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, setView, onCustomize, onBack, onResume }: {
+function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, sound, updateSound, view, setView, onCustomize, onBack, onResume }: {
   isTouch: boolean;
   view: CameraView;
   setView: (v: CameraView) => void;
@@ -363,6 +364,8 @@ function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, se
   pickQuality: (q: 'auto' | 'high' | 'low') => void;
   aim: AimSettings;
   updateAim: (patch: Partial<AimSettings>) => void;
+  sound: SoundSettings;
+  updateSound: (patch: Partial<SoundSettings>) => void;
   onCustomize: () => void;
   onBack: () => void;
   onResume: () => void;
@@ -373,6 +376,12 @@ function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, se
   return (
     <div style={{ width: 'min(92vw, 460px)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ fontSize: 12, letterSpacing: 8, color: '#37d0e0' }}>SETTINGS</div>
+
+      <div style={head}>SOUND</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, alignSelf: 'flex-start' }}>
+        <span style={{ fontSize: 10, letterSpacing: 2, color: '#9fb4c8', width: 108 }}>SOUND</span>
+        <Segmented value={sound.muted ? 'off' : 'on'} options={[{ id: 'on', label: 'ON' }, { id: 'off', label: 'OFF' }] as const} onPick={(v) => updateSound({ muted: v === 'off' })} />
+      </div>
 
       <div style={head}>GRAPHICS</div>
       <div style={{ alignSelf: 'flex-start' }}>
@@ -540,7 +549,13 @@ export interface CoopRemoteInput {
   x: number; y: number; z: number;
   dirX: number; dirY: number; dirZ: number;
   firing: boolean;
+  /** 0..1. Optional: older clients don't send it. */
+  crouch?: number;
 }
+
+/** How one party member is aiming/firing/crouching — relayed by the host so
+ *  every client can draw every teammate with the right pose and muzzle flashes. */
+export interface CoopPose { dirX: number; dirY: number; dirZ: number; firing: boolean; crouch: number }
 
 /** `FpsSim.snapshot()` plus the host's own world position — that class is
  *  headless and never owns camera/position state, only combat state, so a
@@ -549,6 +564,10 @@ export interface CoopRemoteInput {
  *  non-host teammates — the host is never a combatant of itself). */
 export type CoopHostSnapshot = ReturnType<FpsSim['snapshot']> & {
   hostPos: { x: number; z: number; eyeY: number };
+  /** The host's own aim / trigger / crouch. Optional: older hosts don't send it. */
+  hostPose?: CoopPose;
+  /** Every non-host teammate's pose, by wallet (from their input reports). */
+  poses?: Record<string, CoopPose>;
 };
 
 /** Host + this many teammates. MUST match `MAX_PARTY_SIZE` in
@@ -564,6 +583,18 @@ const TEAMMATE_FIRE_INTERVAL = 0.12;
  *  aiming. Matches the trust model `resolveRemoteShot`'s own doc states:
  *  the host believes what a teammate's client says it fired. */
 const TEAMMATE_SPREAD = 0;
+/** How often a non-host reports its position/aim (seconds). It used to send
+ *  every frame (~60/s) — far more than the host needs, and enough on a phone
+ *  connection to arrive in clumps, which is what made teammates jitter. */
+const COOP_INPUT_INTERVAL = 0.05;
+/** How often the host broadcasts the shared world (seconds). ~15/s, up from
+ *  ~7/s: a teammate seen through the broadcast moved in visible 150ms steps. */
+const COOP_BROADCAST_INTERVAL = 0.066;
+/** Teammates are drawn this far in the past, blended between the two reports
+ *  either side, so they move smoothly instead of snapping to each packet. */
+const COOP_RENDER_DELAY = 0.12;
+/** Rooms kept behind the REARMOST party member, at most (see pruning). */
+const COOP_MAX_TRAIL = 6;
 
 /** Co-op Endless (party mode) — layered alongside `EndlessOpts`, present
  *  only when this run is a party, not solo. `useCoopSocket`'s own snapshot/
@@ -616,7 +647,7 @@ interface Hud {
   reloadBar: HTMLDivElement | null;
   reloadHint: HTMLDivElement | null;
   hit: HTMLDivElement | null;
-  ch: { t: HTMLDivElement | null; b: HTMLDivElement | null; l: HTMLDivElement | null; r: HTMLDivElement | null };
+  ch: { t: HTMLDivElement | null; b: HTMLDivElement | null; l: HTMLDivElement | null; r: HTMLDivElement | null; c: HTMLDivElement | null };
   lock: HTMLDivElement | null;
   kills: HTMLDivElement | null;
   healthFill: HTMLDivElement | null;
@@ -1230,11 +1261,26 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   const eyeV = useMemo(() => new THREE.Vector3(), []);
   const camDist = useRef(0);   // eased third-person boom length (snaps in, eases out)
   const aimPt = useMemo(() => new THREE.Vector3(), []);
+  const aimingAtEnemy = useRef(false); // crosshair reticle turns green while true
   const teammateRigApis = useRef<Array<OperatorApi | null>>([]);
   const teammateStepDist = useRef<number[]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => 0));
   const teammateStepPos = useRef<[number, number][]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => [0, 0]));
   /** Host only — per-teammate remote-fire cooldown, wallet -> sim.time. */
   const teammateNextShotAt = useRef<Map<string, number>>(new Map());
+  // Smooth teammate rendering: per-teammate report buffer (keyed by wallet, or
+  // 'host'), the last report object seen (each message is a fresh object), and
+  // their rendered velocity / locomotion state / next visual shot time.
+  const mateBuf = useRef<Map<string, Array<{ t: number; x: number; z: number; pose: CoopPose; alive: boolean }>>>(new Map());
+  const mateLast = useRef<Map<string, unknown>>(new Map());
+  const mateVel = useRef<Map<string, { x: number; z: number; px: number; pz: number }>>(new Map());
+  const mateDir = useRef<Map<string, MoveDir>>(new Map());
+  const mateNextFx = useRef<Map<string, number>>(new Map());
+  const lastCoopInputAt = useRef(-1);
+  /** The `firing` value in the last report actually SENT to the host — not
+   *  sampled every frame. Lets a rising edge force an immediate send (see
+   *  below): a tap-fire entirely inside one throttle gap would otherwise
+   *  never be reported, since both samples straddling it read false. */
+  const lastSentFiring = useRef(false);
 
   // Rounds you can SEE. Slow enough to read (a real bullet would be invisible),
   // fast enough to feel lethal. Yours fly out; theirs come at you.
@@ -1606,6 +1652,11 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // freeze the sim + drop any held input so nothing carries through the menu/overlay.
     if (pausedRef.current || gateRef.current) { keys.current.clear(); mouseBtn.current.clear(); return; }
     const dt = Math.min(rawDt, 1 / 20);
+    // War music: up into the combat theme the moment enemies are alive and the
+    // briefing/complete screens aren't covering the fight, back down to the calmer
+    // bed once the room clears. Covers campaign, survival and endless alike since
+    // it just reads live enemy count rather than any one mode's own state.
+    audio.setCombatMusic(sim.time > briefingUntil.current && completeAt.current < 0 && sim.aliveCount() > 0);
     const k = keys.current;
     const held = (c: string) => k.has(c);
     const ct = controls.current;
@@ -1970,11 +2021,18 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // The point under the crosshair (third person) — shots leave the EYE toward it.
     cam.getWorldDirection(fwd);
     let shotDir: Vec3 = [fwd.x, fwd.y, fwd.z];
-    if (tpp) {
+    {
       const enemies = sim.getEnemies().map((e) => ({ x: e.x, z: e.z, alive: e.alive }));
-      const p = aimPoint([cam.position.x, cam.position.y, cam.position.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
-      aimPt.set(p[0], p[1], p[2]);
-      shotDir = aimDirFromEye([eyeV.x, eyeV.y, eyeV.z], p, shotDir);
+      if (tpp) {
+        const hit = aimPointInfo([cam.position.x, cam.position.y, cam.position.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
+        aimPt.set(hit.point[0], hit.point[1], hit.point[2]);
+        shotDir = aimDirFromEye([eyeV.x, eyeV.y, eyeV.z], hit.point, shotDir);
+        aimingAtEnemy.current = hit.hitEnemy;
+      } else {
+        // First person: the crosshair ray starts at the eye, same point the shot fires from.
+        const hit = aimPointInfo([eyeV.x, eyeV.y, eyeV.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
+        aimingAtEnemy.current = hit.hitEnemy;
+      }
     }
     // Your soldier's rifle points where the shot will actually go (+Z = barrel),
     // up and down included. Dead: let go of it and fall with the clip.
@@ -2063,11 +2121,21 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       // Report this frame's real position/aim to the host — the host's sim
       // is the only one that ever gets real enemies (see the endless flow
       // below), so this is what lets it target/render this player at all.
-      coop.sendRemoteInput?.({
-        x: eyeV.x, y: eyeV.y, z: eyeV.z,
-        dirX: fwd.x, dirY: fwd.y, dirZ: fwd.z,
-        firing: input.firing,
-      });
+      // A fresh trigger pull always sends immediately, bypassing the
+      // throttle: the host only ever sees "firing" on a report it actually
+      // receives, so a tap-fire shorter than COOP_INPUT_INTERVAL would
+      // otherwise fall entirely inside one gap and never reach the host.
+      const firingEdge = input.firing && !lastSentFiring.current;
+      if (firingEdge || sim.time - lastCoopInputAt.current >= COOP_INPUT_INTERVAL) {
+        lastCoopInputAt.current = sim.time;
+        lastSentFiring.current = input.firing;
+        coop.sendRemoteInput?.({
+          x: eyeV.x, y: eyeV.y, z: eyeV.z,
+          dirX: fwd.x, dirY: fwd.y, dirZ: fwd.z,
+          firing: input.firing,
+          crouch: crouchCur.current,
+        });
+      }
     }
 
     sim.step(dt, input);
@@ -2238,9 +2306,18 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // playtesting shows visible jitter, per the plan). Every non-host client
     // reads it back via `latestHostSnapshot` for enemy positions/hp AND
     // teammate positions/hp — one payload, one source of truth.
-    if (coop?.isHost && now - lastCoopBroadcastAt.current > 0.15) {
+    if (coop?.isHost && now - lastCoopBroadcastAt.current > COOP_BROADCAST_INTERVAL) {
       lastCoopBroadcastAt.current = now;
-      coop.sendHostState?.({ ...snap, hostPos: { x: eyeV.x, z: eyeV.z, eyeY: eyeV.y } });
+      const poses: Record<string, CoopPose> = {};
+      for (const [wallet, peer] of coop.latestPeerInputs?.current ?? []) {
+        poses[wallet] = { dirX: peer.dirX, dirY: peer.dirY, dirZ: peer.dirZ, firing: !!peer.firing, crouch: peer.crouch ?? 0 };
+      }
+      coop.sendHostState?.({
+        ...snap,
+        hostPos: { x: eyeV.x, z: eyeV.z, eyeY: eyeV.y },
+        hostPose: { dirX: fwd.x, dirY: fwd.y, dirZ: fwd.z, firing: input.firing && snap.playerAlive, crouch: crouchCur.current },
+        poses,
+      });
     }
     // Co-op non-host: this client's own sim never has real enemies (only the
     // host's does — see FpsWorld's co-op section above), so what actually
@@ -2291,23 +2368,26 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // never a combatant of its own sim) plus every OTHER non-host teammate
     // (combatants, with this client's own wallet excluded). ──
     if (coop) {
-      const seats: Array<{ x: number; z: number; facing?: number; alive: boolean }> = [];
+      // Who to draw, keyed so each keeps its own smoothing buffer: on the host,
+      // every teammate from their input reports; elsewhere, the host plus every
+      // other teammate from the host's broadcast. Each report object is new per
+      // message, so a changed identity = a fresh sample to buffer.
+      const nowS = performance.now() / 1000;
+      const seen: Array<{ id: string; src: unknown; x: number; z: number; pose: CoopPose; alive: boolean }> = [];
       if (coop.isHost) {
-        // The host's own client never learns a teammate's hp/alive from
-        // their input reports (those only ever carry position/aim/fire-
-        // intent) — sim.getCombatant is the one place it lives, since this
-        // sim is the authoritative one actually applying enemy damage to it.
         for (const [wallet, peer] of coop.latestPeerInputs?.current ?? []) {
           const c = sim.getCombatant(wallet);
-          seats.push({ x: peer.x, z: peer.z, facing: Math.atan2(peer.dirX, peer.dirZ), alive: c?.alive ?? true });
+          seen.push({ id: wallet, src: peer, x: peer.x, z: peer.z, alive: c?.alive ?? true,
+            pose: { dirX: peer.dirX, dirY: peer.dirY, dirZ: peer.dirZ, firing: !!peer.firing, crouch: peer.crouch ?? 0 } });
         }
       } else {
         const hostSnap = coop.latestHostSnapshot?.current;
         if (hostSnap) {
-          seats.push({ x: hostSnap.hostPos.x, z: hostSnap.hostPos.z, alive: hostSnap.playerAlive });
+          const noPose: CoopPose = { dirX: 0, dirY: 0, dirZ: -1, firing: false, crouch: 0 };
+          seen.push({ id: 'host', src: hostSnap, x: hostSnap.hostPos.x, z: hostSnap.hostPos.z, alive: hostSnap.playerAlive, pose: hostSnap.hostPose ?? noPose });
           for (const [wallet, c] of Object.entries(hostSnap.combatants)) {
             if (wallet === coop.myWallet) continue;
-            seats.push({ x: c.x, z: c.z, alive: c.alive });
+            seen.push({ id: wallet, src: hostSnap, x: c.x, z: c.z, alive: c.alive, pose: hostSnap.poses?.[wallet] ?? noPose });
           }
         }
       }
@@ -2315,29 +2395,91 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       for (let i = 0; i < teammateRefs.current.length; i++) {
         const g = teammateRefs.current[i];
         if (!g) continue;
-        const seat = seats[i];
-        if (!seat) { g.visible = false; continue; }
+        const mate = seen[i];
+        if (!mate) { g.visible = false; continue; }
         g.visible = true;
-        g.position.set(seat.x, 0, seat.z);
 
+        // Buffer a new report.
+        let buf = mateBuf.current.get(mate.id);
+        if (!buf) { buf = []; mateBuf.current.set(mate.id, buf); }
+        if (mateLast.current.get(mate.id) !== mate.src) {
+          mateLast.current.set(mate.id, mate.src);
+          buf.push({ t: nowS, x: mate.x, z: mate.z, pose: mate.pose, alive: mate.alive });
+          if (buf.length > 24) buf.shift();
+        }
+
+        // Draw them COOP_RENDER_DELAY in the past, blended between reports —
+        // smooth motion instead of snapping to each (clumpy, on a phone) packet.
+        const at = nowS - COOP_RENDER_DELAY;
+        let a = buf[0], b = buf[buf.length - 1];
+        for (let k = buf.length - 1; k > 0; k--) {
+          if (buf[k - 1].t <= at) { a = buf[k - 1]; b = buf[k]; break; }
+        }
+        const span = b.t - a.t;
+        const f = span > 0 ? Math.max(0, Math.min(1, (at - a.t) / span)) : 1;
+        const rx = a.x + (b.x - a.x) * f;
+        const rz = a.z + (b.z - a.z) * f;
+        const pose = b.pose;
+        g.position.set(rx, 0, rz);
+
+        // Facing = where they aim (the rig faces +Z at rotation 0).
+        const flat = Math.hypot(pose.dirX, pose.dirZ);
+        const yaw = flat > 1e-4 ? Math.atan2(pose.dirX, pose.dirZ) : g.rotation.y;
+        if (b.alive) g.rotation.set(0, yaw, 0);
+
+        // Velocity of the DRAWN body, smoothed — so the legs follow real
+        // movement, not packet arrival (which flickered run/idle every frame).
+        let v = mateVel.current.get(mate.id);
+        if (!v) { v = { x: 0, z: 0, px: rx, pz: rz }; mateVel.current.set(mate.id, v); }
+        if (dt > 0) {
+          const k = Math.min(1, dt * 10);
+          v.x += ((rx - v.px) / dt - v.x) * k;
+          v.z += ((rz - v.pz) / dt - v.z) * k;
+        }
+        v.px = rx; v.pz = rz;
+        const speed = Math.hypot(v.x, v.z);
+
+        const rig = teammateRigApis.current[i];
+        if (rig) {
+          // Same body language as your own third-person soldier: strafes,
+          // back-pedal, crouch and crouch-shuffle, clips paced to real speed.
+          // The camera-convention helper wants yaw with 0 = -Z; the rig's is +Z.
+          const [fwdAmt, rightAmt] = speed > 0.25 ? worldToLocalFwdRight(yaw + Math.PI, v.x, v.z) : [0, 0];
+          mateDir.current.set(mate.id, driveOperatorLocomotion(rig, {
+            alive: b.alive, fwd: fwdAmt / WALK, right: rightAmt / WALK, speed: WALK,
+            crouch: pose.crouch, ads: false,
+          }, mateDir.current.get(mate.id) ?? 'forward'));
+          // Their rifle points where they aim, up and down included.
+          if (b.alive) aimOperatorAlong(rig, tmp.set(pose.dirX, pose.dirY, pose.dirZ)); else rig.setAim(null);
+        }
+
+        // Footstep dust, as before.
         const prev = teammateStepPos.current[i];
-        const moved = Math.hypot(seat.x - prev[0], seat.z - prev[1]);
-        // Facing: the host knows a teammate's REAL aim direction (reported
-        // every frame); a non-host only ever sees positions, so it falls
-        // back to facing the way they're walking — a real but minor v1
-        // asymmetry, not worth carrying aim direction through the broadcast
-        // for every party member just for this.
-        const facing = seat.facing ?? (moved > 0.001 ? Math.atan2(seat.x - prev[0], seat.z - prev[1]) : null);
-        if (facing !== null && seat.alive) g.rotation.set(0, facing, 0);
-        if (moved > 0.001 && seat.alive) {
-          prev[0] = seat.x; prev[1] = seat.z;
+        const moved = Math.hypot(rx - prev[0], rz - prev[1]);
+        if (moved > 0.001 && b.alive) {
+          prev[0] = rx; prev[1] = rz;
           teammateStepDist.current[i] += moved;
           if (teammateStepDist.current[i] >= STRIDE) {
             teammateStepDist.current[i] = 0;
-            impactFx.scuff([seat.x, 0, seat.z], 0.7);
+            impactFx.scuff([rx, 0, rz], 0.7);
           }
         }
-        teammateRigApis.current[i]?.setClip(!seat.alive ? 'death' : moved > 0.02 ? 'run' : 'idle');
+
+        // Their shots, visibly: rifle kick, muzzle flash and tracer to the first
+        // wall/floor/enemy along their aim, and the shot heard from their side.
+        // (On the host the hits themselves are resolved above; this is the show.)
+        if (b.alive && pose.firing && now >= (mateNextFx.current.get(mate.id) ?? 0)) {
+          mateNextFx.current.set(mate.id, now + TEAMMATE_FIRE_INTERVAL);
+          rig?.playOnce('fire', 1.4);
+          const eyeY = 1.6 - 0.55 * pose.crouch;
+          const dirLen = Math.hypot(pose.dirX, pose.dirY, pose.dirZ) || 1;
+          const dir: Vec3 = [pose.dirX / dirLen, pose.dirY / dirLen, pose.dirZ / dirLen];
+          const origin: Vec3 = [rx + dir[0] * 0.6, eyeY - 0.15, rz + dir[2] * 0.6];
+          const targets = liveEnemies.map((e) => ({ x: e.x, z: e.z, alive: e.alive }));
+          const hit = aimPointInfo(origin, dir, origin, sim.getCover(), targets);
+          spawnBeam(tmp2.set(origin[0], origin[1], origin[2]), hit.point, false);
+          audio.enemyShot([rx, eyeY, rz]);
+        }
       }
     }
     // Endless maps a live, changing enemy list onto a fixed rig pool, so any slot past
@@ -2642,12 +2784,40 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
 
           // Prune behind. Everything dropped here is regenerable from the seed, so
           // this costs nothing but the memory it frees.
-          const keepFrom = c.cursor - ENDLESS_TRAIL;
+          //
+          // Co-op: never drop a room a TEAMMATE is still in. Each client used to
+          // prune behind its own position only, so whoever ran ahead deleted the
+          // rooms the others were standing in — turning back showed blank space
+          // with no walls, and (on the host) no enemies or cover there either.
+          // Keep back to the rearmost party member, capped at COOP_MAX_TRAIL.
+          let keepFrom = c.cursor - ENDLESS_TRAIL;
+          if (coop) {
+            const partyZ: number[] = [];
+            if (coop.isHost) {
+              for (const [, peer] of coop.latestPeerInputs?.current ?? []) partyZ.push(peer.z);
+            } else {
+              const hs = coop.latestHostSnapshot?.current;
+              if (hs) {
+                partyZ.push(hs.hostPos.z);
+                for (const cb of Object.values(hs.combatants)) partyZ.push(cb.z);
+              }
+            }
+            for (const z of partyZ) {
+              // Forward is -Z, so "behind" is the larger z.
+              const room = c.rooms.find((r) => z <= r.zNear && z >= r.zFar) ?? (z > (c.rooms[0]?.zNear ?? -Infinity) ? c.rooms[0] : undefined);
+              if (room) keepFrom = Math.min(keepFrom, room.index - ENDLESS_TRAIL);
+            }
+            keepFrom = Math.max(keepFrom, c.cursor - COOP_MAX_TRAIL);
+          }
           const trailRoom = roomAt(keepFrom);
           if (trailRoom) {
             sim.pruneBehind(keepFrom + 1, trailRoom.zNear);
             c.rooms = c.rooms.filter((r) => r.index >= keepFrom);
           }
+          // Rooms kept for a teammate keep their walls and live enemies, but not
+          // the dead: behind YOUR trail, corpses go as they always did, so the
+          // rig pool (ENDLESS_ENEMY_POOL) never overflows.
+          if (coop) sim.pruneDeadBefore(c.cursor - ENDLESS_TRAIL + 1);
           // Keep the enemy safety box on the live window as it travels.
           sim.setBounds(-ENDLESS_HALF_W, ENDLESS_HALF_W, c.rooms[c.rooms.length - 1].zFar, c.rooms[0].zNear);
           setGeoTick((t) => t + 1);
@@ -3051,11 +3221,13 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     if (h.nvgTint) h.nvgTint.style.opacity = String(nvgAmt.current);
     if (h.scope) h.scope.style.opacity = String(snap.attachments.includes('optic') ? adsCur.current : 0);
     if (h.attachments) {
-      // one chip per attachment; lit when active, dim + its key when not
+      // one chip per attachment; lit when active, dim + its key when not. A transparent
+      // background on the "off" chip used to vanish entirely over bright sky/sand — every
+      // chip now sits on its own dark backing plate so it reads against any background.
       const on = new Set(snap.attachments);
       h.attachments.innerHTML = ATTACH_CHIPS.map((c) => {
         const active = on.has(c.id);
-        return `<span style="font-size:10px;letter-spacing:1px;padding:3px 7px;border-radius:4px;border:1px solid ${active ? c.color : '#2a3440'};background:${active ? c.color + '22' : 'transparent'};color:${active ? c.color : '#4a5763'}">${c.label}<span style="opacity:.55"> ${c.key}</span></span>`;
+        return `<span style="font-size:10px;letter-spacing:1px;padding:3px 7px;border-radius:4px;border:1px solid ${active ? c.color : 'rgba(255,255,255,.3)'};background:${active ? c.color + '33' : 'rgba(8,12,16,.65)'};color:${active ? c.color : '#c7d0da'}">${c.label}<span style="opacity:.55"> ${c.key}</span></span>`;
       }).join('');
     }
     // Mobile kit chips carry no on/off state in their static style, so light them
@@ -3077,14 +3249,17 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       }
     }
     if (h.lock) h.lock.style.opacity = locked.current ? '0' : '1';
-    // crosshair gap grows with spread + recoil
+    // crosshair gap grows with spread + recoil; it turns green over a live target,
+    // amber (not plain white) the rest of the time so it still reads against bright sky/sand
     const spread = sim.spreadFor(adsCur.current, false, crouchCur.current > 0.5);
     const gap = 5 + spread * 620 + Math.abs(recoilP.current) * 340;
-    const { t, b, l, r } = h.ch;
-    if (t) t.style.transform = `translate(-50%, ${-gap - 8}px)`;
-    if (b) b.style.transform = `translate(-50%, ${gap}px)`;
-    if (l) l.style.transform = `translate(${-gap - 8}px, -50%)`;
-    if (r) r.style.transform = `translate(${gap}px, -50%)`;
+    const { t, b, l, r, c } = h.ch;
+    const chColor = aimingAtEnemy.current ? '#5fd08a' : '#eab308';
+    if (t) { t.style.transform = `translate(-50%, ${-gap - 8}px)`; t.style.background = chColor; }
+    if (b) { b.style.transform = `translate(-50%, ${gap}px)`; b.style.background = chColor; }
+    if (l) { l.style.transform = `translate(${-gap - 8}px, -50%)`; l.style.background = chColor; }
+    if (r) { r.style.transform = `translate(${gap}px, -50%)`; r.style.background = chColor; }
+    if (c) c.style.background = chColor;
 
     paintRefills();   // no-ops unless the count moved
     // health bar + damage vignette (red flash on hit, and a base tint when low)
@@ -4016,7 +4191,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
     ? Math.min(resumeLevel, CAMPAIGN.length - 1) : -1;
   const hud = useRef<Hud>({
     root: null, ammo: null, fireMode: null, weapon: null, loadout: null, attachments: null, nvgTint: null, scope: null, reload: null, reloadBar: null, reloadHint: null, hit: null,
-    ch: { t: null, b: null, l: null, r: null }, lock: null, kills: null,
+    ch: { t: null, b: null, l: null, r: null, c: null }, lock: null, kills: null,
     healthFill: null, refills: null, vignette: null, hitDir: null, down: null, arrows: [],
     objText: null, survEnd: null, survEndText: null, waveHud: null, waveLabel: null, waveRooms: null, waveDone: null, waveDoneText: null, waveDoneSub: null, objArrow: null, briefing: null, complete: null, perf: null,
     lockReticle: null,
@@ -4258,6 +4433,18 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       return next;
     });
   }, []);
+  // Sound on/off (settings panel). Applied via an effect rather than inline in
+  // updateSound so the persisted setting also takes effect on the very first
+  // mount, before the player has touched the toggle at all.
+  const [sound, setSound] = useState<SoundSettings>(loadSoundSettings);
+  const updateSound = useCallback((patch: Partial<SoundSettings>) => {
+    setSound((prev) => {
+      const next = { ...prev, ...patch };
+      saveSoundSettings(next);
+      return next;
+    });
+  }, []);
+  useEffect(() => { audio.setMuted(sound.muted); }, [audio, sound.muted]);
   // Camera view (first / third person). Mirrored into controls so the frame loop
   // switches on the next frame; persisted per device.
   const [view, setViewState] = useState<CameraView>(loadCameraView);
@@ -4549,7 +4736,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
     paintCrouchBtn(on);
   };
 
-  const tick = 'position:absolute;left:50%;top:50%;background:#e9edf2;box-shadow:0 0 2px #000;';
+  const tick = 'position:absolute;left:50%;top:50%;background:#e9edf2;box-shadow:0 0 2px #000;z-index:2;';
   return (
     <div ref={(r) => { hud.current.root = r; }} style={{ position: 'fixed', inset: 0, background: '#000', cursor: 'none', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none', overflow: 'hidden' }}>
       {/* The RENDERER owns the filmic curve (R3F's ACES default). The composer
@@ -4592,12 +4779,14 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       {/* C3 perf meter (?perf=1 or P) — top-left, out of the way of the HUD */}
       <div ref={(r) => { hud.current.perf = r; }} style={{ position: 'absolute', left: 12, top: 8, zIndex: 60, display: perfOn ? 'block' : 'none', fontFamily: 'monospace', fontSize: 12, letterSpacing: 0.5, color: '#5fe0a8', background: 'rgba(0,0,0,.5)', padding: '3px 8px', borderRadius: 5, pointerEvents: 'none' }}>— FPS</div>
 
-      {/* Lock-on reticle — a gold bracket the frame loop parks over the locked enemy */}
+      {/* Lock-on reticle — a green bracket the frame loop parks over the locked enemy,
+          matching the crosshair's own green so everything around a locked target reads
+          as one color instead of two competing ones */}
       <div ref={(r) => { hud.current.lockReticle = r; }}
         style={{ position: 'absolute', left: 0, top: 0, width: 54, height: 54, zIndex: 55, opacity: 0, pointerEvents: 'none', transition: 'opacity .12s', willChange: 'transform' }}>
-        <svg width="54" height="54" viewBox="0 0 54 54" fill="none" stroke="#eab308" strokeWidth="2.5" style={{ filter: 'drop-shadow(0 0 4px rgba(234,179,8,.7))' }}>
+        <svg width="54" height="54" viewBox="0 0 54 54" fill="none" stroke="#5fd08a" strokeWidth="2.5" style={{ filter: 'drop-shadow(0 0 4px rgba(95,208,138,.7))' }}>
           <path d="M4 16V4h12M50 16V4H38M4 38v12h12M50 38v12H38" strokeLinecap="round" />
-          <circle cx="27" cy="27" r="2" fill="#eab308" stroke="none" />
+          <circle cx="27" cy="27" r="2" fill="#5fd08a" stroke="none" />
         </svg>
       </div>
 
@@ -4608,30 +4797,34 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         <div ref={(r) => { hud.current.ch.b = r; }} style={{ ...s(tick), width: 2, height: 8, transform: 'translate(-50%,8px)' }} />
         <div ref={(r) => { hud.current.ch.l = r; }} style={{ ...s(tick), width: 8, height: 2, transform: 'translate(-16px,-50%)' }} />
         <div ref={(r) => { hud.current.ch.r = r; }} style={{ ...s(tick), width: 8, height: 2, transform: 'translate(8px,-50%)' }} />
-        <div style={{ ...s(tick), width: 2, height: 2, transform: 'translate(-50%,-50%)' }} />
+        <div ref={(r) => { hud.current.ch.c = r; }} style={{ ...s(tick), width: 2, height: 2, transform: 'translate(-50%,-50%)' }} />
 
         {/* hitmarker */}
         <div ref={(r) => { hud.current.hit = r; }} style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', fontSize: 26, fontWeight: 700, opacity: 0, transition: 'opacity .08s', textShadow: '0 0 3px #000' }}>✕</div>
 
-        {/* ammo + weapon + reload — on touch it sits top-right and, crucially, is
-            offset LEFT of the right action-button column (≤64px from the edge) so the
-            two can never overlap regardless of screen height. */}
-        <div style={{ position: 'absolute', right: isTouch ? 84 : 26, textAlign: 'right', ...(isTouch ? { top: 10 } : { bottom: 22 }) }}>
-          <div ref={(r) => { hud.current.weapon = r; }} style={{ fontSize: 13, letterSpacing: 2, fontWeight: 700, color: '#e9edf2', marginBottom: 1 }}>ASSAULT RIFLE</div>
-          <div ref={(r) => { hud.current.loadout = r; }} style={{ fontSize: 10, letterSpacing: 2, color: '#6f7d8c', marginBottom: 3 }}>1 · 2</div>
-          <div ref={(r) => { hud.current.fireMode = r; }} style={{ fontSize: 12, letterSpacing: 3, fontWeight: 700, color: '#8fb8d0', marginBottom: 2 }}>AUTO</div>
-          <div ref={(r) => { hud.current.ammo = r; }} style={{ fontSize: 30, fontWeight: 700, letterSpacing: 1 }}>24 / 24</div>
-          <div ref={(r) => { hud.current.reload = r; }} style={{ opacity: 0, marginTop: 4, fontSize: 12, color: '#ffb454' }}>
-            RELOADING
-            <div style={{ width: 120, height: 3, background: '#333', marginTop: 3, marginLeft: 'auto' }}>
-              <div ref={(r) => { hud.current.reloadBar = r; }} style={{ width: '0%', height: '100%', background: '#ffb454' }} />
+        {/* attachment strip + ammo/weapon/reload, stacked in ONE flex column so the
+            chip row keeps a fixed gap above the panel no matter how tall the panel's
+            own content gets (the reload block appearing used to push its top edge
+            up into the chips, since each used an independent magic-number `bottom`).
+            On touch the chip strip hides and the panel sits top-right instead,
+            offset LEFT of the right action-button column (≤64px from the edge) so
+            the two can never overlap regardless of screen height. */}
+        <div style={{ position: 'absolute', right: isTouch ? 84 : 26, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 14, ...(isTouch ? { top: 10 } : { bottom: 22 }) }}>
+          <div ref={(r) => { hud.current.attachments = r; }} style={{ display: isTouch ? 'none' : 'flex', gap: 6, justifyContent: 'flex-end' }} />
+          <div style={{ textAlign: 'right' }}>
+            <div ref={(r) => { hud.current.weapon = r; }} style={{ fontSize: 13, letterSpacing: 2, fontWeight: 700, color: '#e9edf2', marginBottom: 1 }}>ASSAULT RIFLE</div>
+            <div ref={(r) => { hud.current.loadout = r; }} style={{ fontSize: 10, letterSpacing: 2, color: '#6f7d8c', marginBottom: 3 }}>1 · 2</div>
+            <div ref={(r) => { hud.current.fireMode = r; }} style={{ fontSize: 12, letterSpacing: 3, fontWeight: 700, color: '#8fb8d0', marginBottom: 2 }}>AUTO</div>
+            <div ref={(r) => { hud.current.ammo = r; }} style={{ fontSize: 30, fontWeight: 700, letterSpacing: 1 }}>24 / 24</div>
+            <div ref={(r) => { hud.current.reload = r; }} style={{ opacity: 0, marginTop: 4, fontSize: 12, color: '#ffb454' }}>
+              RELOADING
+              <div style={{ width: 120, height: 3, background: '#333', marginTop: 3, marginLeft: 'auto' }}>
+                <div ref={(r) => { hud.current.reloadBar = r; }} style={{ width: '0%', height: '100%', background: '#ffb454' }} />
+              </div>
             </div>
+            <div ref={(r) => { hud.current.reloadHint = r; }} style={{ marginTop: 4, fontSize: 11, letterSpacing: 1, color: '#6f7d8c' }}>{isTouch ? 'TAP TO RELOAD' : 'PRESS [R] TO RELOAD'}</div>
           </div>
-          <div ref={(r) => { hud.current.reloadHint = r; }} style={{ marginTop: 4, fontSize: 11, letterSpacing: 1, color: '#6f7d8c' }}>{isTouch ? 'TAP TO RELOAD' : 'PRESS [R] TO RELOAD'}</div>
         </div>
-
-        {/* attachment strip (toggleable kit) */}
-        <div ref={(r) => { hud.current.attachments = r; }} style={{ position: 'absolute', right: 26, bottom: 150, display: isTouch ? 'none' : 'flex', gap: 6, justifyContent: 'flex-end' }} />
 
         {/* kills — hidden on touch (the bottom-left is the movement thumb there) */}
         <div ref={(r) => { hud.current.kills = r; }} style={{ position: 'absolute', left: 26, bottom: 22, fontSize: 13, color: '#9fb4c8', display: isTouch ? 'none' : 'block' }}>KILLS 0   ·   HS 0</div>
@@ -4766,6 +4959,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
             <SettingsPanel
               isTouch={isTouch} quality={quality} pickQuality={pickQuality}
               aim={aim} updateAim={updateAim}
+              sound={sound} updateSound={updateSound}
               view={view} setView={setView}
               onCustomize={() => setEditingLayout(true)}
               onBack={() => setPauseView('main')} onResume={() => { setPauseView('main'); resume(); }}
@@ -4822,18 +5016,18 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
 
         {/* zone / op label (operations are chosen outside the game now). On touch it
             shifts right to clear the top-left EXIT button. */}
-        <div style={{ position: 'absolute', left: isTouch ? 90 : 150, top: 20 }}>
-          <span style={{ fontSize: 12, letterSpacing: 2, color: '#6f7d8c' }}>{mode === 'endless' ? `Valor · ${seasonal ? 'SEASONAL CAMPAIGN' : 'ENDLESS'} · ${mission.name}` : mode === 'gauntlet' ? 'Valor · GAUNTLET · RANKED' : mode === 'survival' ? 'Valor · SURVIVAL · THE KILL-HOUSE' : `Valor · ${mission.zone} · OP ${missionIndex + 1}/${CAMPAIGN.length}`}</span>
+        <div style={{ position: 'absolute', left: isTouch ? 90 : 150, top: 20, background: 'rgba(0,0,0,.4)', padding: '4px 10px', borderRadius: 4 }}>
+          <span style={{ fontSize: 12, letterSpacing: 2, color: '#c3d1de', textShadow: '0 0 4px #000' }}>{mode === 'endless' ? `Valor · ${seasonal ? 'SEASONAL CAMPAIGN' : 'ENDLESS'} · ${mission.name}` : mode === 'gauntlet' ? 'Valor · GAUNTLET · RANKED' : mode === 'survival' ? 'Valor · SURVIVAL · THE KILL-HOUSE' : `Valor · ${mission.zone} · OP ${missionIndex + 1}/${CAMPAIGN.length}`}</span>
         </div>
         {!isTouch && (
-          <div style={{ position: 'absolute', right: 26, top: 20, fontSize: 11, lineHeight: 1.7, textAlign: 'right', color: '#6f7d8c' }}>
+          <div style={{ position: 'absolute', right: 26, top: 20, fontSize: 11, lineHeight: 1.7, textAlign: 'right', color: '#c3d1de', textShadow: '0 0 4px #000', background: 'rgba(0,0,0,.4)', padding: '6px 10px', borderRadius: 4 }}>
             WASD move · MOUSE / ARROWS look<br />SPACE fire · SHIFT ads · T target · Q/E lean · C crouch · R reload · B fire-mode<br />1 / 2 or X swap weapon · N nvg · F light · L laser · O optic · V view · M ops · ESC release mouse
           </div>
         )}
 
         {/* aim hint — desktop only (mobile has visible controls) */}
         {!isTouch && (
-          <div ref={(r) => { hud.current.lock = r; }} style={{ position: 'absolute', left: '50%', top: '44%', transform: 'translate(-50%,0)', fontSize: 13, color: '#9fb4c8', background: 'rgba(0,0,0,.45)', padding: '8px 14px', borderRadius: 6 }}>
+          <div ref={(r) => { hud.current.lock = r; }} style={{ position: 'absolute', left: '50%', top: '44%', transform: 'translate(-50%,0)', fontSize: 13, color: '#e9edf2', textShadow: '0 0 4px #000', background: 'rgba(0,0,0,.7)', padding: '8px 14px', borderRadius: 6 }}>
             AIM UP/DOWN: move the mouse (captures on your first keypress) · or use the ARROW KEYS · Esc releases the mouse, then EXIT / ⏸ are top-left
           </div>
         )}
