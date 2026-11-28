@@ -48,6 +48,13 @@ export function useChatSocket(walletAddress: string | undefined) {
         // The bell: refresh it on any notification or message for us.
         if ((msg as { type: string }).type === 'notification' || msg.type === 'new_message') {
           void queryClient.invalidateQueries({ queryKey: notificationsKey(walletAddress) })
+          // Friend requests/accepts arrive as notifications too — keep the
+          // friend list (lobby Add/Chat buttons) in step without waiting to poll.
+          if ((msg as { type: string }).type === 'notification') {
+            const me = walletAddress.toLowerCase()
+            void queryClient.invalidateQueries({ queryKey: ['friends', me] })
+            void queryClient.invalidateQueries({ queryKey: ['friend-requests', me] })
+          }
         }
         if (msg.type !== 'new_message') return
 

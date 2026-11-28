@@ -164,7 +164,11 @@ export default function FriendsPage() {
     try {
       const result = await sendRequest(value)
       setIdentifier('')
-      setFormNotice(result.auto_accepted ? 'You are now friends' : 'Friend request sent')
+      setFormNotice(
+        result.already
+          ? (result.status === 'accepted' ? "You're already friends" : 'Request already sent')
+          : result.auto_accepted ? 'You are now friends' : 'Friend request sent',
+      )
     } catch (e) {
       setFormError(e instanceof Error ? e.message : 'Could not send request')
     } finally {
