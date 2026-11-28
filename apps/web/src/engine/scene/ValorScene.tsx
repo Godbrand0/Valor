@@ -3090,11 +3090,12 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       }
     }
     if (h.lock) h.lock.style.opacity = locked.current ? '0' : '1';
-    // crosshair gap grows with spread + recoil; it turns green over a live target
+    // crosshair gap grows with spread + recoil; it turns green over a live target,
+    // amber (not plain white) the rest of the time so it still reads against bright sky/sand
     const spread = sim.spreadFor(adsCur.current, false, crouchCur.current > 0.5);
     const gap = 5 + spread * 620 + Math.abs(recoilP.current) * 340;
     const { t, b, l, r, c } = h.ch;
-    const chColor = aimingAtEnemy.current ? '#5fd08a' : '#e9edf2';
+    const chColor = aimingAtEnemy.current ? '#5fd08a' : '#eab308';
     if (t) { t.style.transform = `translate(-50%, ${-gap - 8}px)`; t.style.background = chColor; }
     if (b) { b.style.transform = `translate(-50%, ${gap}px)`; b.style.background = chColor; }
     if (l) { l.style.transform = `translate(${-gap - 8}px, -50%)`; l.style.background = chColor; }
@@ -4607,12 +4608,12 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       {/* C3 perf meter (?perf=1 or P) — top-left, out of the way of the HUD */}
       <div ref={(r) => { hud.current.perf = r; }} style={{ position: 'absolute', left: 12, top: 8, zIndex: 60, display: perfOn ? 'block' : 'none', fontFamily: 'monospace', fontSize: 12, letterSpacing: 0.5, color: '#5fe0a8', background: 'rgba(0,0,0,.5)', padding: '3px 8px', borderRadius: 5, pointerEvents: 'none' }}>— FPS</div>
 
-      {/* Lock-on reticle — a gold bracket the frame loop parks over the locked enemy */}
+      {/* Lock-on reticle — a blue bracket the frame loop parks over the locked enemy */}
       <div ref={(r) => { hud.current.lockReticle = r; }}
         style={{ position: 'absolute', left: 0, top: 0, width: 54, height: 54, zIndex: 55, opacity: 0, pointerEvents: 'none', transition: 'opacity .12s', willChange: 'transform' }}>
-        <svg width="54" height="54" viewBox="0 0 54 54" fill="none" stroke="#eab308" strokeWidth="2.5" style={{ filter: 'drop-shadow(0 0 4px rgba(234,179,8,.7))' }}>
+        <svg width="54" height="54" viewBox="0 0 54 54" fill="none" stroke="#3b82f6" strokeWidth="2.5" style={{ filter: 'drop-shadow(0 0 4px rgba(59,130,246,.7))' }}>
           <path d="M4 16V4h12M50 16V4H38M4 38v12h12M50 38v12H38" strokeLinecap="round" />
-          <circle cx="27" cy="27" r="2" fill="#eab308" stroke="none" />
+          <circle cx="27" cy="27" r="2" fill="#3b82f6" stroke="none" />
         </svg>
       </div>
 
@@ -4628,25 +4629,29 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         {/* hitmarker */}
         <div ref={(r) => { hud.current.hit = r; }} style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', fontSize: 26, fontWeight: 700, opacity: 0, transition: 'opacity .08s', textShadow: '0 0 3px #000' }}>✕</div>
 
-        {/* ammo + weapon + reload — on touch it sits top-right and, crucially, is
-            offset LEFT of the right action-button column (≤64px from the edge) so the
-            two can never overlap regardless of screen height. */}
-        <div style={{ position: 'absolute', right: isTouch ? 84 : 26, textAlign: 'right', ...(isTouch ? { top: 10 } : { bottom: 22 }) }}>
-          <div ref={(r) => { hud.current.weapon = r; }} style={{ fontSize: 13, letterSpacing: 2, fontWeight: 700, color: '#e9edf2', marginBottom: 1 }}>ASSAULT RIFLE</div>
-          <div ref={(r) => { hud.current.loadout = r; }} style={{ fontSize: 10, letterSpacing: 2, color: '#6f7d8c', marginBottom: 3 }}>1 · 2</div>
-          <div ref={(r) => { hud.current.fireMode = r; }} style={{ fontSize: 12, letterSpacing: 3, fontWeight: 700, color: '#8fb8d0', marginBottom: 2 }}>AUTO</div>
-          <div ref={(r) => { hud.current.ammo = r; }} style={{ fontSize: 30, fontWeight: 700, letterSpacing: 1 }}>24 / 24</div>
-          <div ref={(r) => { hud.current.reload = r; }} style={{ opacity: 0, marginTop: 4, fontSize: 12, color: '#ffb454' }}>
-            RELOADING
-            <div style={{ width: 120, height: 3, background: '#333', marginTop: 3, marginLeft: 'auto' }}>
-              <div ref={(r) => { hud.current.reloadBar = r; }} style={{ width: '0%', height: '100%', background: '#ffb454' }} />
+        {/* attachment strip + ammo/weapon/reload, stacked in ONE flex column so the
+            chip row keeps a fixed gap above the panel no matter how tall the panel's
+            own content gets (the reload block appearing used to push its top edge
+            up into the chips, since each used an independent magic-number `bottom`).
+            On touch the chip strip hides and the panel sits top-right instead,
+            offset LEFT of the right action-button column (≤64px from the edge) so
+            the two can never overlap regardless of screen height. */}
+        <div style={{ position: 'absolute', right: isTouch ? 84 : 26, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 14, ...(isTouch ? { top: 10 } : { bottom: 22 }) }}>
+          <div ref={(r) => { hud.current.attachments = r; }} style={{ display: isTouch ? 'none' : 'flex', gap: 6, justifyContent: 'flex-end' }} />
+          <div style={{ textAlign: 'right' }}>
+            <div ref={(r) => { hud.current.weapon = r; }} style={{ fontSize: 13, letterSpacing: 2, fontWeight: 700, color: '#e9edf2', marginBottom: 1 }}>ASSAULT RIFLE</div>
+            <div ref={(r) => { hud.current.loadout = r; }} style={{ fontSize: 10, letterSpacing: 2, color: '#6f7d8c', marginBottom: 3 }}>1 · 2</div>
+            <div ref={(r) => { hud.current.fireMode = r; }} style={{ fontSize: 12, letterSpacing: 3, fontWeight: 700, color: '#8fb8d0', marginBottom: 2 }}>AUTO</div>
+            <div ref={(r) => { hud.current.ammo = r; }} style={{ fontSize: 30, fontWeight: 700, letterSpacing: 1 }}>24 / 24</div>
+            <div ref={(r) => { hud.current.reload = r; }} style={{ opacity: 0, marginTop: 4, fontSize: 12, color: '#ffb454' }}>
+              RELOADING
+              <div style={{ width: 120, height: 3, background: '#333', marginTop: 3, marginLeft: 'auto' }}>
+                <div ref={(r) => { hud.current.reloadBar = r; }} style={{ width: '0%', height: '100%', background: '#ffb454' }} />
+              </div>
             </div>
+            <div ref={(r) => { hud.current.reloadHint = r; }} style={{ marginTop: 4, fontSize: 11, letterSpacing: 1, color: '#6f7d8c' }}>{isTouch ? 'TAP TO RELOAD' : 'PRESS [R] TO RELOAD'}</div>
           </div>
-          <div ref={(r) => { hud.current.reloadHint = r; }} style={{ marginTop: 4, fontSize: 11, letterSpacing: 1, color: '#6f7d8c' }}>{isTouch ? 'TAP TO RELOAD' : 'PRESS [R] TO RELOAD'}</div>
         </div>
-
-        {/* attachment strip (toggleable kit) */}
-        <div ref={(r) => { hud.current.attachments = r; }} style={{ position: 'absolute', right: 26, bottom: 150, display: isTouch ? 'none' : 'flex', gap: 6, justifyContent: 'flex-end' }} />
 
         {/* kills — hidden on touch (the bottom-left is the movement thumb there) */}
         <div ref={(r) => { hud.current.kills = r; }} style={{ position: 'absolute', left: 26, bottom: 22, fontSize: 13, color: '#9fb4c8', display: isTouch ? 'none' : 'block' }}>KILLS 0   ·   HS 0</div>
