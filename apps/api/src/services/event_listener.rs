@@ -257,17 +257,23 @@ impl EventListener {
             .bind(on_chain_id as i16).fetch_optional(&self.db).await?)
     }
 
-    /// Adds the item to `wallet`'s inventory; true if it wasn't there already.
-    /// A wallet with no Valor player (a buyer straight on the contract who never
-    /// signed up) is skipped: `inventory` requires a player row, and failing here
-    /// would stall the listener on that block forever.
-    async fn grant(&self, wallet: &str, item: uuid::Uuid) -> Result<bool> {
+    /// True if `wallet` has no Valor player row. A buyer straight on the
+    /// contract who never signed up is skipped: `inventory` requires a player
+    /// row, and failing here would stall the listener on that block forever.
+    /// Loud on purpose — this silently drops an on-chain purchase/gift, with
+    /// no retry once the wallet does sign up, so it needs to be visible.
+    async fn is_unregistered(&self, wallet: &str, item: uuid::Uuid) -> Result<bool> {
         let is_player: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM players WHERE wallet_address = $1)")
             .bind(wallet).fetch_one(&self.db).await?;
         if !is_player {
-            tracing::info!("Event listener: {} isn't a Valor player — item {} not added to any inventory", wallet, item);
-            return Ok(false);
+            tracing::warn!("Event listener: {} isn't a Valor player — item {} not added to any inventory (purchase/gift event dropped)", wallet, item);
         }
+        Ok(!is_player)
+    }
+
+    /// Adds the item to `wallet`'s inventory; true if it wasn't there already.
+    async fn grant(&self, wallet: &str, item: uuid::Uuid) -> Result<bool> {
+        if self.is_unregistered(wallet, item).await? { return Ok(false); }
         Ok(sqlx::query(
             "INSERT INTO inventory (wallet_address, item_id, equipped, acquired_at)
              VALUES ($1, $2, false, now()) ON CONFLICT (wallet_address, item_id) DO NOTHING",
@@ -275,10 +281,23 @@ impl EventListener {
         .bind(wallet).bind(item).execute(&self.db).await?.rows_affected() == 1)
     }
 
-    async fn decrement_supply(&self, item: uuid::Uuid) -> Result<()> {
-        sqlx::query("UPDATE items SET remaining_supply = GREATEST(0, remaining_supply - 1) WHERE id = $1 AND remaining_supply IS NOT NULL")
-            .bind(item).execute(&self.db).await?;
-        Ok(())
+    /// Grants the item and, only if it was newly granted, decrements supply —
+    /// both in one transaction, so a retry after either write fails re-applies
+    /// both rather than silently skipping the decrement on the next pass.
+    async fn grant_and_decrement_supply(&self, wallet: &str, item: uuid::Uuid) -> Result<bool> {
+        if self.is_unregistered(wallet, item).await? { return Ok(false); }
+        let mut tx = self.db.begin().await?;
+        let granted = sqlx::query(
+            "INSERT INTO inventory (wallet_address, item_id, equipped, acquired_at)
+             VALUES ($1, $2, false, now()) ON CONFLICT (wallet_address, item_id) DO NOTHING",
+        )
+        .bind(wallet).bind(item).execute(&mut *tx).await?.rows_affected() == 1;
+        if granted {
+            sqlx::query("UPDATE items SET remaining_supply = GREATEST(0, remaining_supply - 1) WHERE id = $1 AND remaining_supply IS NOT NULL")
+                .bind(item).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(granted)
     }
 
     async fn apply_effects(&self, event: &MarketEvent, tx: &str, items: &ListenerItems<Provider<Http>>) -> Result<()> {
@@ -290,19 +309,26 @@ impl EventListener {
                 };
                 // A relay purchase is already in inventory (and ledgered) by now;
                 // only a purchase made straight on the contract adds anything.
-                if self.grant(buyer, uuid).await? {
-                    self.decrement_supply(uuid).await?;
+                if self.grant_and_decrement_supply(buyer, uuid).await? {
                     crate::handlers::ledger::insert_ledger_entry(
                         &self.db, buyer, "marketplace_purchase", wei_to_g(*price_wei), Some(tx), None, ChainId::Celo,
                     ).await;
                     tracing::info!("Event listener: {} bought item {} directly on chain", buyer, uuid);
                 }
             }
-            MarketEvent::Gifted { recipient, item, .. } => {
-                let Some(uuid) = self.item_uuid(*item).await? else { return Ok(()); };
-                if self.grant(recipient, uuid).await? {
-                    self.decrement_supply(uuid).await?;
-                    tracing::info!("Event listener: {} received gifted item {} directly on chain", recipient, uuid);
+            MarketEvent::Gifted { payer, recipient, item, price_wei } => {
+                let Some(uuid) = self.item_uuid(*item).await? else {
+                    tracing::warn!("ItemGifted for unknown on_chain_id {}", item);
+                    return Ok(());
+                };
+                // A relay gift is already in inventory (and ledgered on the payer's
+                // side) by now; only a gift made straight on the contract adds
+                // anything — mirror the relay path's payer-side ledger entry here too.
+                if self.grant_and_decrement_supply(recipient, uuid).await? {
+                    crate::handlers::ledger::insert_ledger_entry(
+                        &self.db, payer, "marketplace_gift", wei_to_g(*price_wei), Some(tx), Some(recipient), ChainId::Celo,
+                    ).await;
+                    tracing::info!("Event listener: {} gifted item {} to {} directly on chain", payer, uuid, recipient);
                 }
             }
             MarketEvent::Resold { buyer, seller, item, price_wei, fee_wei } => {
