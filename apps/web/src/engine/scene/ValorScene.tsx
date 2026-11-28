@@ -35,6 +35,7 @@ import { dressingFor, dressingColliders, type PropSpec } from './setDressing';
 import { useSurvivalRearm, NeedArmError, type RearmAction } from '@/hooks/useSurvivalRearm';
 import { useGauntlet, type GauntletBoardRow, type SeasonInfo } from '@/hooks/useGauntlet';
 import { AIM_DEFAULTS, SENS_MIN, SENS_MAX, SMOOTH_RATE, loadAimSettings, saveAimSettings, type AimSettings, type AimSmoothing } from '../input/aimSettings';
+import { loadSoundSettings, saveSoundSettings, type SoundSettings } from '../audio/soundSettings';
 import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout } from '../input/controlLayout';
 import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
 import { placeCamera, aimPointInfo, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
@@ -355,7 +356,7 @@ const QUALITY_OPTIONS = [
  * Pause-menu SETTINGS page: graphics, aim speeds and (on touch) the button layout.
  * Every value applies live, so RESUME is the test.
  */
-function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, setView, onCustomize, onBack, onResume }: {
+function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, sound, updateSound, view, setView, onCustomize, onBack, onResume }: {
   isTouch: boolean;
   view: CameraView;
   setView: (v: CameraView) => void;
@@ -363,6 +364,8 @@ function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, se
   pickQuality: (q: 'auto' | 'high' | 'low') => void;
   aim: AimSettings;
   updateAim: (patch: Partial<AimSettings>) => void;
+  sound: SoundSettings;
+  updateSound: (patch: Partial<SoundSettings>) => void;
   onCustomize: () => void;
   onBack: () => void;
   onResume: () => void;
@@ -373,6 +376,12 @@ function SettingsPanel({ isTouch, quality, pickQuality, aim, updateAim, view, se
   return (
     <div style={{ width: 'min(92vw, 460px)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ fontSize: 12, letterSpacing: 8, color: '#37d0e0' }}>SETTINGS</div>
+
+      <div style={head}>SOUND</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, alignSelf: 'flex-start' }}>
+        <span style={{ fontSize: 10, letterSpacing: 2, color: '#9fb4c8', width: 108 }}>SOUND</span>
+        <Segmented value={sound.muted ? 'off' : 'on'} options={[{ id: 'on', label: 'ON' }, { id: 'off', label: 'OFF' }] as const} onPick={(v) => updateSound({ muted: v === 'off' })} />
+      </div>
 
       <div style={head}>GRAPHICS</div>
       <div style={{ alignSelf: 'flex-start' }}>
@@ -4276,6 +4285,18 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       return next;
     });
   }, []);
+  // Sound on/off (settings panel). Applied via an effect rather than inline in
+  // updateSound so the persisted setting also takes effect on the very first
+  // mount, before the player has touched the toggle at all.
+  const [sound, setSound] = useState<SoundSettings>(loadSoundSettings);
+  const updateSound = useCallback((patch: Partial<SoundSettings>) => {
+    setSound((prev) => {
+      const next = { ...prev, ...patch };
+      saveSoundSettings(next);
+      return next;
+    });
+  }, []);
+  useEffect(() => { audio.setMuted(sound.muted); }, [audio, sound.muted]);
   // Camera view (first / third person). Mirrored into controls so the frame loop
   // switches on the next frame; persisted per device.
   const [view, setViewState] = useState<CameraView>(loadCameraView);
@@ -4790,6 +4811,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
             <SettingsPanel
               isTouch={isTouch} quality={quality} pickQuality={pickQuality}
               aim={aim} updateAim={updateAim}
+              sound={sound} updateSound={updateSound}
               view={view} setView={setView}
               onCustomize={() => setEditingLayout(true)}
               onBack={() => setPauseView('main')} onResume={() => { setPauseView('main'); resume(); }}

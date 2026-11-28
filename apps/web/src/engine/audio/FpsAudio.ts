@@ -86,6 +86,11 @@ export class FpsAudio {
   private uiBus!: GainNode;
   private ambBus!: GainNode;
   private ambBaseVol = 0.05;
+  private masterVol = 0.9;
+  // Settings-panel mute: stored independently of `ctx` so a player who muted last
+  // session (or before unlock() ever runs) starts silent instead of a frame of audio
+  // slipping out before the setting is applied.
+  private muted = false;
   private ambLp: BiquadFilterNode | null = null; // the ambience tone filter (retuned per zone)
   private drone: OscillatorNode | null = null;   // optional low zone hum (the Rift / Survival)
   private zone = 'ASHFALL';
@@ -147,7 +152,7 @@ export class FpsAudio {
       this.limiter.connect(ctx.destination);
 
       this.master = ctx.createGain();
-      this.master.gain.value = 0.9;
+      this.master.gain.value = this.muted ? 0 : this.masterVol;
       this.master.connect(this.limiter);
 
       this.gunBus = ctx.createGain();
@@ -255,6 +260,17 @@ export class FpsAudio {
   /** True once a user gesture has built the graph (autoplay is allowed). */
   isUnlocked(): boolean {
     return this.stats_.unlocked;
+  }
+
+  /** The settings-panel sound toggle. Safe to call before unlock() — the graph
+   *  doesn't exist yet, so the flag alone decides the starting volume. */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    if (this.master) this.master.gain.value = muted ? 0 : this.masterVol;
+  }
+
+  isMuted(): boolean {
+    return this.muted;
   }
 
   setListener(x: number, z: number, yaw: number): void {
