@@ -280,8 +280,11 @@ pub enum ServerMsg {
     Input { wallet: String, sample: InputSample },
     /// An accidental drop (network loss, tab killed, backgrounding) — distinct
     /// from `Forfeit`. Pauses the room and starts a `RECONNECT_GRACE` timer
-    /// rather than ending the match; see `on_leave`.
-    Leave { wallet: String },
+    /// rather than ending the match; see `on_leave`. `tx` identifies exactly
+    /// which connection dropped — two tabs on the same wallet share a wallet
+    /// but never a channel, so this is what stops one tab's close from
+    /// evicting the other tab's still-live `waiting` slot.
+    Leave { wallet: String, tx: UnboundedSender<String> },
     /// A deliberate "Exit" from the client, distinct from `Leave`. This one
     /// always settles immediately: the wallet forfeits, its opponent gets a
     /// real `match_end` win, same payout rails as any other finish.
@@ -418,7 +421,7 @@ impl ArenaServer {
         match msg {
             ServerMsg::Join(entry) => self.on_join(entry, self_tx),
             ServerMsg::Input { wallet, sample } => self.on_input(&wallet, sample),
-            ServerMsg::Leave { wallet } => self.on_leave(&wallet, self_tx),
+            ServerMsg::Leave { wallet, tx } => self.on_leave(&wallet, &tx, self_tx),
             ServerMsg::Forfeit { wallet } => self.on_forfeit(&wallet),
             ServerMsg::GraceExpired { room_id, wallet, since } => self.on_grace_expired(&room_id, &wallet, since),
             ServerMsg::Spectate { duel_id, tx } => self.on_spectate(duel_id, tx),
@@ -721,11 +724,17 @@ impl ArenaServer {
     /// a forfeit-loss, via `on_grace_expired` — so a flaky connection isn't
     /// punished the same as a deliberate quit, but a genuine walkaway still
     /// resolves the stake instead of stranding it.
-    fn on_leave(&mut self, wallet: &str, self_tx: &UnboundedSender<ServerMsg>) {
-        // Not yet paired — just drop the waiting slot if it's theirs.
-        let waiting_duel = self.waiting.iter().find(|(_, e)| e.wallet == wallet).map(|(id, _)| *id);
-        self.waiting.retain(|_, e| e.wallet != wallet);
+    fn on_leave(&mut self, wallet: &str, tx: &UnboundedSender<String>, self_tx: &UnboundedSender<ServerMsg>) {
+        // Not yet paired — drop the waiting slot, but only if THIS connection
+        // is the one sitting in it. A second tab on the same wallet gets a
+        // fresh waiting slot (see on_join's dedup branch) without evicting the
+        // first tab's; matching by wallet alone here would let the losing
+        // tab's own close wipe out the slot the newer tab just took over.
+        let waiting_duel = self.waiting.iter()
+            .find(|(_, e)| e.wallet == wallet && e.tx.same_channel(tx))
+            .map(|(id, _)| *id);
         if let Some(duel_id) = waiting_duel {
+            self.waiting.remove(&duel_id);
             self.pinged.remove(&duel_id);
             tracing::info!("arena: {} left the waiting slot before anyone joined", wallet);
         }
@@ -1276,6 +1285,14 @@ mod tests {
         (ClientEntry { duel_id, wallet: wallet.into(), other_wallet: String::new(), name: wallet.into(), stake_g: 500, tx }, rx)
     }
 
+    /// A throwaway channel for `on_leave`'s connection-identity check, for
+    /// tests where the wallet is already seated in a room (not `waiting`) —
+    /// the identity check only matters for a wallet still in the waiting
+    /// slot, so these never need it to match anything real.
+    fn dummy_tx() -> mpsc::UnboundedSender<String> {
+        mpsc::unbounded_channel().0
+    }
+
     async fn next_json(rx: &mut mpsc::UnboundedReceiver<String>) -> serde_json::Value {
         let raw = rx.recv().await.expect("expected a message on this channel");
         serde_json::from_str(&raw).expect("message wasn't valid JSON")
@@ -1347,6 +1364,36 @@ mod tests {
         assert_eq!(server.rooms.len(), 1);
         let room = server.rooms.values().next().unwrap();
         assert_ne!(room.p1.wallet, room.p2.wallet);
+        assert_eq!(next_json(&mut rx_tab2).await["type"], "match_found");
+        assert_eq!(next_json(&mut rx_opp).await["type"], "match_found");
+    }
+
+    /// The bug the dedup branch above would otherwise reintroduce: the OLDER
+    /// tab's close (sent as a plain `Leave{wallet}` from the real browser tab
+    /// that lost the dedup) must not evict the NEWER tab's waiting slot just
+    /// because they share a wallet.
+    #[tokio::test]
+    async fn the_evicted_tabs_own_close_does_not_evict_the_survivor() {
+        let mut server = new_server();
+        let (self_tx, _self_rx) = mpsc::unbounded_channel();
+        let duel_id = Uuid::new_v4();
+        let (tab1, mut rx_tab1) = entry(duel_id, "0xAAA");
+        let tab1_tx = tab1.tx.clone();
+        let (tab2, mut rx_tab2) = entry(duel_id, "0xAAA");
+        server.on_join(tab1, &self_tx);
+        assert_eq!(next_json(&mut rx_tab1).await["type"], "waiting_for_opponent");
+        server.on_join(tab2, &self_tx);
+        assert_eq!(next_json(&mut rx_tab1).await["type"], "error");
+        assert_eq!(next_json(&mut rx_tab2).await["type"], "waiting_for_opponent");
+
+        // tab1's socket now actually closes — its own Leave, wallet "0xAAA".
+        server.on_leave("0xAAA", &tab1_tx, &self_tx);
+        assert_eq!(server.waiting.len(), 1, "tab2's waiting slot must survive tab1's close");
+
+        // A real opponent still finds tab2 waiting.
+        let (opp, mut rx_opp) = entry(duel_id, "0xBBB");
+        server.on_join(opp, &self_tx);
+        assert_eq!(server.rooms.len(), 1);
         assert_eq!(next_json(&mut rx_tab2).await["type"], "match_found");
         assert_eq!(next_json(&mut rx_opp).await["type"], "match_found");
     }
@@ -1616,7 +1663,7 @@ mod tests {
         let (self_tx, _self_rx) = mpsc::unbounded_channel();
         let (_rx1, mut rx2) = paired_and_fighting(&mut server, duel_id).await;
 
-        server.on_leave("0xAAA", &self_tx);
+        server.on_leave("0xAAA", &dummy_tx(), &self_tx);
         let msg = next_json(&mut rx2).await;
         assert_eq!(msg["type"], "opponent_disconnected");
         assert!(msg["grace_seconds"].as_u64().unwrap() > 0);
@@ -1634,7 +1681,7 @@ mod tests {
         let (self_tx, _self_rx) = mpsc::unbounded_channel();
         let (_rx1, mut rx2) = paired_and_fighting(&mut server, duel_id).await;
 
-        server.on_leave("0xAAA", &self_tx);
+        server.on_leave("0xAAA", &dummy_tx(), &self_tx);
         let _ = next_json(&mut rx2).await; // opponent_disconnected, asserted above
 
         let (rejoin, mut rx3) = entry(duel_id, "0xAAA");
@@ -1660,7 +1707,7 @@ mod tests {
         let (self_tx, _self_rx) = mpsc::unbounded_channel();
         let (mut rx1, mut rx2) = paired_and_fighting(&mut server, duel_id).await;
 
-        server.on_leave("0xAAA", &self_tx);
+        server.on_leave("0xAAA", &dummy_tx(), &self_tx);
         let _ = next_json(&mut rx2).await; // opponent_disconnected
         let since = *server.rooms.get(&duel_id.to_string()).unwrap().disconnected.get("0xAAA").unwrap();
 
@@ -1687,7 +1734,7 @@ mod tests {
         let (self_tx, _self_rx) = mpsc::unbounded_channel();
         let (mut rx1, mut rx2) = paired_and_fighting(&mut server, duel_id).await;
 
-        server.on_leave("0xAAA", &self_tx);
+        server.on_leave("0xAAA", &dummy_tx(), &self_tx);
         let _ = next_json(&mut rx2).await; // opponent_disconnected
         let stale_since = *server.rooms.get(&duel_id.to_string()).unwrap().disconnected.get("0xAAA").unwrap();
 
@@ -1710,8 +1757,8 @@ mod tests {
         let (self_tx, _self_rx) = mpsc::unbounded_channel();
         let (_rx1, _rx2) = paired_and_fighting(&mut server, duel_id).await;
 
-        server.on_leave("0xAAA", &self_tx);
-        server.on_leave("0xBBB", &self_tx);
+        server.on_leave("0xAAA", &dummy_tx(), &self_tx);
+        server.on_leave("0xBBB", &dummy_tx(), &self_tx);
         assert_eq!(server.rooms.get(&duel_id.to_string()).unwrap().disconnected.len(), 2);
 
         let (rejoin_a, mut rx_a) = entry(duel_id, "0xAAA");
