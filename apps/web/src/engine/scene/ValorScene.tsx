@@ -3064,11 +3064,13 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     if (h.nvgTint) h.nvgTint.style.opacity = String(nvgAmt.current);
     if (h.scope) h.scope.style.opacity = String(snap.attachments.includes('optic') ? adsCur.current : 0);
     if (h.attachments) {
-      // one chip per attachment; lit when active, dim + its key when not
+      // one chip per attachment; lit when active, dim + its key when not. A transparent
+      // background on the "off" chip used to vanish entirely over bright sky/sand — every
+      // chip now sits on its own dark backing plate so it reads against any background.
       const on = new Set(snap.attachments);
       h.attachments.innerHTML = ATTACH_CHIPS.map((c) => {
         const active = on.has(c.id);
-        return `<span style="font-size:10px;letter-spacing:1px;padding:3px 7px;border-radius:4px;border:1px solid ${active ? c.color : '#2a3440'};background:${active ? c.color + '22' : 'transparent'};color:${active ? c.color : '#4a5763'}">${c.label}<span style="opacity:.55"> ${c.key}</span></span>`;
+        return `<span style="font-size:10px;letter-spacing:1px;padding:3px 7px;border-radius:4px;border:1px solid ${active ? c.color : 'rgba(255,255,255,.3)'};background:${active ? c.color + '33' : 'rgba(8,12,16,.65)'};color:${active ? c.color : '#c7d0da'}">${c.label}<span style="opacity:.55"> ${c.key}</span></span>`;
       }).join('');
     }
     // Mobile kit chips carry no on/off state in their static style, so light them
@@ -4608,12 +4610,14 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
       {/* C3 perf meter (?perf=1 or P) — top-left, out of the way of the HUD */}
       <div ref={(r) => { hud.current.perf = r; }} style={{ position: 'absolute', left: 12, top: 8, zIndex: 60, display: perfOn ? 'block' : 'none', fontFamily: 'monospace', fontSize: 12, letterSpacing: 0.5, color: '#5fe0a8', background: 'rgba(0,0,0,.5)', padding: '3px 8px', borderRadius: 5, pointerEvents: 'none' }}>— FPS</div>
 
-      {/* Lock-on reticle — a blue bracket the frame loop parks over the locked enemy */}
+      {/* Lock-on reticle — a green bracket the frame loop parks over the locked enemy,
+          matching the crosshair's own green so everything around a locked target reads
+          as one color instead of two competing ones */}
       <div ref={(r) => { hud.current.lockReticle = r; }}
         style={{ position: 'absolute', left: 0, top: 0, width: 54, height: 54, zIndex: 55, opacity: 0, pointerEvents: 'none', transition: 'opacity .12s', willChange: 'transform' }}>
-        <svg width="54" height="54" viewBox="0 0 54 54" fill="none" stroke="#3b82f6" strokeWidth="2.5" style={{ filter: 'drop-shadow(0 0 4px rgba(59,130,246,.7))' }}>
+        <svg width="54" height="54" viewBox="0 0 54 54" fill="none" stroke="#5fd08a" strokeWidth="2.5" style={{ filter: 'drop-shadow(0 0 4px rgba(95,208,138,.7))' }}>
           <path d="M4 16V4h12M50 16V4H38M4 38v12h12M50 38v12H38" strokeLinecap="round" />
-          <circle cx="27" cy="27" r="2" fill="#3b82f6" stroke="none" />
+          <circle cx="27" cy="27" r="2" fill="#5fd08a" stroke="none" />
         </svg>
       </div>
 
