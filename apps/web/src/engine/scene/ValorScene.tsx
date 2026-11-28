@@ -1266,6 +1266,11 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   const mateDir = useRef<Map<string, MoveDir>>(new Map());
   const mateNextFx = useRef<Map<string, number>>(new Map());
   const lastCoopInputAt = useRef(-1);
+  /** The `firing` value in the last report actually SENT to the host — not
+   *  sampled every frame. Lets a rising edge force an immediate send (see
+   *  below): a tap-fire entirely inside one throttle gap would otherwise
+   *  never be reported, since both samples straddling it read false. */
+  const lastSentFiring = useRef(false);
 
   // Rounds you can SEE. Slow enough to read (a real bullet would be invisible),
   // fast enough to feel lethal. Yours fly out; theirs come at you.
@@ -2094,8 +2099,14 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       // Report this frame's real position/aim to the host — the host's sim
       // is the only one that ever gets real enemies (see the endless flow
       // below), so this is what lets it target/render this player at all.
-      if (sim.time - lastCoopInputAt.current >= COOP_INPUT_INTERVAL) {
+      // A fresh trigger pull always sends immediately, bypassing the
+      // throttle: the host only ever sees "firing" on a report it actually
+      // receives, so a tap-fire shorter than COOP_INPUT_INTERVAL would
+      // otherwise fall entirely inside one gap and never reach the host.
+      const firingEdge = input.firing && !lastSentFiring.current;
+      if (firingEdge || sim.time - lastCoopInputAt.current >= COOP_INPUT_INTERVAL) {
         lastCoopInputAt.current = sim.time;
+        lastSentFiring.current = input.firing;
         coop.sendRemoteInput?.({
           x: eyeV.x, y: eyeV.y, z: eyeV.z,
           dirX: fwd.x, dirY: fwd.y, dirZ: fwd.z,
