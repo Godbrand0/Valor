@@ -36,6 +36,32 @@ pub(crate) fn payout_split(pool_g: u64, n: usize, custom: Option<&[i32]>) -> Vec
         .collect()
 }
 
+#[derive(Serialize)]
+pub(crate) struct PayoutTier {
+    rank_from: usize,
+    rank_to: usize,
+    amount_g: u64,
+}
+
+/// Collapses the whole payout table (not just the current field's size) into rank
+/// ranges that pay the same amount — e.g. "1-5 get 60,000 G$ each, 6-10 get 40,000
+/// G$ each" — so a season's page can show players the split before they ever play,
+/// not just estimate it per leaderboard row that already has an entrant.
+pub(crate) fn payout_tiers(pool_g: u64, custom: Option<&[i32]>) -> Vec<PayoutTier> {
+    let table_len = custom.map_or(PAYOUT_BPS.len(), |b| b.len());
+    let amounts = payout_split(pool_g, table_len, custom);
+    let mut tiers: Vec<PayoutTier> = Vec::new();
+    for (i, &amount_g) in amounts.iter().enumerate() {
+        if amount_g == 0 { continue; }
+        let rank = i + 1;
+        match tiers.last_mut() {
+            Some(last) if last.amount_g == amount_g && last.rank_to + 1 == rank => last.rank_to = rank,
+            _ => tiers.push(PayoutTier { rank_from: rank, rank_to: rank, amount_g }),
+        }
+    }
+    tiers
+}
+
 #[derive(FromRow)]
 struct SeasonMeta {
     id: Uuid,
@@ -191,6 +217,7 @@ pub async fn current(state: web::Data<AppState>) -> HttpResponse {
             "ended": ended,
             "seed": season.seed,
             "prize_pool_g": season.prize_pool_g,
+            "payout_tiers": payout_tiers(season.prize_pool_g.max(0) as u64, season.payout_bps.as_deref()),
             "payout_status": season.payout_status,
             // Set when the prize is paid to one group's members only.
             "payout_group": payout_group.map(|(slug, name)| json!({"slug": slug, "name": name})),

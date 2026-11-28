@@ -223,6 +223,18 @@ export default function SeasonalPage() {
                 <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Your best</p>
                 <p className="font-display font-black text-white text-lg">{you?.best ?? 0} waves</p>
               </div>
+              {season.payout_tiers.length > 0 && (
+                <div className="px-4 py-2 rounded-xl border" style={{ borderColor: 'rgba(42,42,58,0.8)' }}>
+                  <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Payout split</p>
+                  {season.payout_tiers.map((t) => (
+                    <p key={t.rank_from} className="text-xs text-slate-300 leading-tight">
+                      {t.rank_from === t.rank_to ? `Rank ${t.rank_from}` : `Ranks ${t.rank_from}-${t.rank_to}`}
+                      {': '}
+                      <span className="text-amber-400 font-bold">{t.amount_g.toLocaleString()} G$</span> each
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* One shared seed means everyone walks the same compound — worth saying,
