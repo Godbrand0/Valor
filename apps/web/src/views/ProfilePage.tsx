@@ -36,18 +36,13 @@ export default function ProfilePage() {
   const inventory    = usePlayerStore(s => s.inventory)
   const { incoming: incomingFriendRequests } = useFriends(address)
   const myGroup = useMyGroup(address)
-
-  if (status === 'loading') return <LoadingScreen />
-  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
-  // No cache and sync not done yet — brief wait
-  if (!player && !playerSynced) return <LoadingScreen />
-  // Sync done, confirmed no player — let home page route them
-  if (!player) return <Redirect to="/" />
-
-  const charClass  = (player.character_class ?? 'Berserker') as CharacterClass
-  const def        = CLASS_DEFINITIONS[charClass] ?? CLASS_DEFINITIONS['Berserker']
-  const xpBar      = xpForNextRank(player.rank)
-  const xpProgress = (player.xp / xpBar) * 100
+  // Every hook this component calls must run on every render, including the
+  // ones below that only make sense once `player` exists — the early returns
+  // after this block skip straight to rendering, never to another hook call,
+  // so React always sees the same hook count regardless of which of those
+  // returns fires. (This page used to call these after the guards, which
+  // crashed with "Rendered more hooks than during the previous render" the
+  // first time it mounted mid-sync instead of with `player` already cached.)
   const [showUsernameModal, setShowUsernameModal] = useState(false)
   const [cardCopied, setCardCopied] = useState(false)
   const { data: referrals } = useQuery<{ recruited: number; earned_g: number }>({
@@ -60,7 +55,6 @@ export default function ProfilePage() {
     enabled: !!address,
     staleTime: 60_000,
   })
-
   const itemIds = inventory.map(i => i.item_id)
   const { data: items = [] } = useQuery({
     queryKey: ['items', itemIds],
@@ -76,6 +70,18 @@ export default function ProfilePage() {
     enabled: itemIds.length > 0,
     staleTime: 60_000,
   })
+
+  if (status === 'loading') return <LoadingScreen />
+  if (status === 'unauthenticated' || !address) return <Redirect to="/" />
+  // No cache and sync not done yet — brief wait
+  if (!player && !playerSynced) return <LoadingScreen />
+  // Sync done, confirmed no player — let home page route them
+  if (!player) return <Redirect to="/" />
+
+  const charClass  = (player.character_class ?? 'Berserker') as CharacterClass
+  const def        = CLASS_DEFINITIONS[charClass] ?? CLASS_DEFINITIONS['Berserker']
+  const xpBar      = xpForNextRank(player.rank)
+  const xpProgress = (player.xp / xpBar) * 100
   const itemMap      = new Map(items.map(i => [i.id, i]))
   const equipped     = inventory.filter(i => i.equipped).map(i => itemMap.get(i.item_id)).filter(Boolean) as Item[]
   const attackBoost  = equipped.filter(i => i.category === 'weapon').reduce((s, i) => s + i.stat_boost, 0)
