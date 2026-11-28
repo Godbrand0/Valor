@@ -83,7 +83,12 @@ export default function MultiplayerLobbyPage() {
     setBusy(wallet)
     try {
       const r = await sendRequest(wallet)
-      setNotice({ text: r.auto_accepted ? 'You are now friends' : 'Friend request sent', ok: true })
+      setNotice({
+        text: r.already
+          ? (r.status === 'accepted' ? "You're already friends" : 'Request already sent')
+          : r.auto_accepted ? 'You are now friends' : 'Friend request sent',
+        ok: true,
+      })
     } catch (e) {
       setNotice({ text: e instanceof Error ? e.message : 'Could not send request', ok: false })
     } finally {

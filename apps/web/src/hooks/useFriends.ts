@@ -61,6 +61,10 @@ export function useFriends(walletAddress: string | undefined) {
     queryFn: () => get<{ friends: FriendEntry[] }>(`/players/${walletAddress}/friends`),
     enabled: !!walletAddress,
     staleTime: 15_000,
+    // A request can be accepted on the OTHER player's device while this page is
+    // open; without polling the lobby kept offering "Add" to an existing friend.
+    // (The chat socket also refreshes this on a notification ping.)
+    refetchInterval: 30_000,
   })
 
   const requests = useQuery({
@@ -81,15 +85,25 @@ export function useFriends(walletAddress: string | undefined) {
 
   /** `identifier` is either a wallet address or a username — the caller decides
    *  which by what they typed; the server tells them apart automatically. */
-  const sendRequest = useCallback(async (identifier: string) => {
+  /** `already: true` = nothing to do: you're already friends ('accepted') or
+   *  your request is already pending ('pending'). Not an error — the list was
+   *  just out of date, and it's refreshed either way. */
+  const sendRequest = useCallback(async (identifier: string): Promise<{ status: string; auto_accepted?: boolean; already?: boolean }> => {
     if (!walletAddress) throw new Error('Not signed in')
-    const result = await post<{ status: string; auto_accepted?: boolean }>(
-      `/players/${walletAddress}/friends/request`,
-      walletAddress, walletClient,
-      { identifier },
-    )
-    refresh()
-    return result
+    try {
+      return await post<{ status: string; auto_accepted?: boolean }>(
+        `/players/${walletAddress}/friends/request`,
+        walletAddress, walletClient,
+        { identifier },
+      )
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : ''
+      if (msg === 'Already friends') return { status: 'accepted', already: true }
+      if (msg === 'Request already sent') return { status: 'pending', already: true }
+      throw e
+    } finally {
+      refresh()
+    }
   }, [walletAddress, walletClient, refresh])
 
   const acceptRequest = useCallback(async (fromWallet: string) => {
