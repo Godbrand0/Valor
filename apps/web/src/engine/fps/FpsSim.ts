@@ -1213,11 +1213,17 @@ export class FpsSim {
    * standing inside a player or teammate is pushed off them. Every push goes
    * through slideMove, so it can never shove a body into or through a wall.
    * A boss is heavier: in a pair it gives way a quarter as much as a mook.
+   *
+   * Dormant (`!active`) enemies are excluded, same as the maneuver loop above
+   * skips them: Endless preloads rooms ahead of the player, so without this a
+   * dormant squad's authored spawn points — or the player just walking past
+   * them before their room wakes — would get silently shoved apart/aside
+   * every frame, well before anyone can see it happen.
    */
   private separateBodies(targets: ReadonlyArray<{ x: number; z: number; alive: boolean }>): void {
     const E = FPS_TUNING.ENEMY;
     const S = E.SPACING;
-    const live = this.enemies.filter((e) => e.alive);
+    const live = this.enemies.filter((e) => e.alive && e.active);
     for (let pass = 0; pass < 2; pass++) {
       for (let i = 0; i < live.length; i++) {
         const a = live[i];
