@@ -32,6 +32,12 @@ const SAMPLE_BASE = '/sounds/fps/';
 const RIFLE_FILES = ['rifle_1.mp3', 'rifle_2.mp3', 'rifle_3.mp3'];
 const WALL_FILE = 'impact_wall.mp3';
 
+// Two looping war-music beds: an ever-present, calmer theme and a driving combat
+// theme, crossfaded against each other by setCombatMusic() so the score breathes
+// with the fight instead of hard-cutting in and out.
+const MUSIC_BASE = '/sounds/music/';
+const MUSIC_FILES = { combat: 'combat.mp3', intermission: 'intermission.mp3' };
+
 const clamp = (lo: number, hi: number, v: number) => Math.max(lo, Math.min(hi, v));
 
 /**
@@ -97,6 +103,18 @@ export class FpsAudio {
   private samplesLoaded = false;
   private fetching: Promise<(ArrayBuffer | null)[]> | null = null;
 
+  // War-music beds: both loops run continuously once loaded, each through its own
+  // gain so setCombatMusic() can crossfade between them instead of restarting a
+  // source (which would pop/click on every combat-state flip).
+  private musicBus!: GainNode;
+  private combatMusic: AudioBuffer | null = null;
+  private introMusic: AudioBuffer | null = null;
+  private combatMusicGain: GainNode | null = null;
+  private introMusicGain: GainNode | null = null;
+  private musicFetching: Promise<(ArrayBuffer | null)[]> | null = null;
+  private musicLoaded = false;
+  private combatMusicActive = false;
+
   constructor() {
     // Prefetch the sample bytes at construction (scene mount) so they're ready to
     // decode the instant the context unlocks — the first shot is a real one.
@@ -104,6 +122,10 @@ export class FpsAudio {
       this.fetching = Promise.all(
         [...RIFLE_FILES, WALL_FILE].map((f) =>
           fetch(SAMPLE_BASE + f).then((r) => r.arrayBuffer()).catch(() => null)),
+      );
+      this.musicFetching = Promise.all(
+        [MUSIC_FILES.combat, MUSIC_FILES.intermission].map((f) =>
+          fetch(MUSIC_BASE + f).then((r) => r.arrayBuffer()).catch(() => null)),
       );
     }
   }
@@ -138,8 +160,13 @@ export class FpsAudio {
       this.ambBus.gain.value = this.ambBaseVol;
       for (const b of [this.gunBus, this.impactBus, this.uiBus, this.ambBus]) b.connect(this.master);
 
+      this.musicBus = ctx.createGain();
+      this.musicBus.gain.value = 1;
+      this.musicBus.connect(this.master);
+
       this.startAmbience();
       void this.loadSamples();
+      void this.loadMusic();
       this.stats_.unlocked = true;
     }
     this.ctx?.resume?.().catch(() => {});
@@ -158,6 +185,71 @@ export class FpsAudio {
     const wallAb = abs[RIFLE_FILES.length];
     if (wallAb) { try { this.wall = await ctx.decodeAudioData(wallAb.slice(0)); } catch { /* skip */ } }
     this.stats_.samples = this.rifle.length;
+  }
+
+  private async loadMusic(): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx || !this.musicFetching || this.musicLoaded) return;
+    this.musicLoaded = true;
+    let abs: (ArrayBuffer | null)[];
+    try { abs = await this.musicFetching; } catch { return; }
+    try { if (abs[0]) this.combatMusic = await ctx.decodeAudioData(abs[0].slice(0)); } catch { /* skip a bad file */ }
+    try { if (abs[1]) this.introMusic = await ctx.decodeAudioData(abs[1].slice(0)); } catch { /* skip */ }
+    this.startMusicLoops();
+  }
+
+  /** Both beds start at zero gain the instant they're decoded, then fade to
+   *  whatever combat state was already requested — nothing pops in cold. */
+  private startMusicLoops(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    if (this.combatMusic) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.combatMusic;
+      src.loop = true;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      src.connect(g).connect(this.musicBus);
+      src.start(now);
+      this.combatMusicGain = g;
+    }
+    if (this.introMusic) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.introMusic;
+      src.loop = true;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      src.connect(g).connect(this.musicBus);
+      src.start(now);
+      this.introMusicGain = g;
+    }
+    this.applyMusicLevels(2.2);
+  }
+
+  /**
+   * Crossfade the war-music bed: up into the combat theme while enemies are
+   * alive, back down to the calmer intermission theme once the room clears.
+   * Safe to call before the loops exist — the target is applied once loaded.
+   */
+  setCombatMusic(active: boolean): void {
+    if (this.combatMusicActive === active) return;
+    this.combatMusicActive = active;
+    this.applyMusicLevels(active ? 0.9 : 1.8); // snap into a fight faster than winding back down
+  }
+
+  private applyMusicLevels(tau: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    if (this.combatMusicGain) {
+      this.combatMusicGain.gain.cancelScheduledValues(now);
+      this.combatMusicGain.gain.setTargetAtTime(this.combatMusicActive ? 0.34 : 0, now, tau);
+    }
+    if (this.introMusicGain) {
+      this.introMusicGain.gain.cancelScheduledValues(now);
+      this.introMusicGain.gain.setTargetAtTime(this.combatMusicActive ? 0 : 0.2, now, tau);
+    }
   }
 
   /** True once a user gesture has built the graph (autoplay is allowed). */

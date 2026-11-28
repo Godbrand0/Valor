@@ -1607,6 +1607,11 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // freeze the sim + drop any held input so nothing carries through the menu/overlay.
     if (pausedRef.current || gateRef.current) { keys.current.clear(); mouseBtn.current.clear(); return; }
     const dt = Math.min(rawDt, 1 / 20);
+    // War music: up into the combat theme the moment enemies are alive and the
+    // briefing/complete screens aren't covering the fight, back down to the calmer
+    // bed once the room clears. Covers campaign, survival and endless alike since
+    // it just reads live enemy count rather than any one mode's own state.
+    audio.setCombatMusic(sim.time > briefingUntil.current && completeAt.current < 0 && sim.aliveCount() > 0);
     const k = keys.current;
     const held = (c: string) => k.has(c);
     const ct = controls.current;
