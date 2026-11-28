@@ -37,7 +37,7 @@ import { useGauntlet, type GauntletBoardRow, type SeasonInfo } from '@/hooks/use
 import { AIM_DEFAULTS, SENS_MIN, SENS_MAX, SMOOTH_RATE, loadAimSettings, saveAimSettings, type AimSettings, type AimSmoothing } from '../input/aimSettings';
 import { controlStyle, loadControlLayout, saveControlLayout, type ControlLayout } from '../input/controlLayout';
 import { ControlLayoutEditor } from '../ui/ControlLayoutEditor';
-import { placeCamera, aimPoint, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
+import { placeCamera, aimPointInfo, aimDirFromEye, loadCameraView, saveCameraView, type CameraView } from '../camera/thirdPerson';
 import type { MoveDir } from '../animation/AnimationStateMachine';
 import { driveOperatorLocomotion, aimOperatorAlong, localToWorldXZ, worldToLocalFwdRight } from './operatorLocomotion';
 
@@ -616,7 +616,7 @@ interface Hud {
   reloadBar: HTMLDivElement | null;
   reloadHint: HTMLDivElement | null;
   hit: HTMLDivElement | null;
-  ch: { t: HTMLDivElement | null; b: HTMLDivElement | null; l: HTMLDivElement | null; r: HTMLDivElement | null };
+  ch: { t: HTMLDivElement | null; b: HTMLDivElement | null; l: HTMLDivElement | null; r: HTMLDivElement | null; c: HTMLDivElement | null };
   lock: HTMLDivElement | null;
   kills: HTMLDivElement | null;
   healthFill: HTMLDivElement | null;
@@ -1230,6 +1230,7 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
   const eyeV = useMemo(() => new THREE.Vector3(), []);
   const camDist = useRef(0);   // eased third-person boom length (snaps in, eases out)
   const aimPt = useMemo(() => new THREE.Vector3(), []);
+  const aimingAtEnemy = useRef(false); // crosshair reticle turns green while true
   const teammateRigApis = useRef<Array<OperatorApi | null>>([]);
   const teammateStepDist = useRef<number[]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => 0));
   const teammateStepPos = useRef<[number, number][]>(Array.from({ length: MAX_PARTY_SIZE - 1 }, () => [0, 0]));
@@ -1970,11 +1971,18 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
     // The point under the crosshair (third person) — shots leave the EYE toward it.
     cam.getWorldDirection(fwd);
     let shotDir: Vec3 = [fwd.x, fwd.y, fwd.z];
-    if (tpp) {
+    {
       const enemies = sim.getEnemies().map((e) => ({ x: e.x, z: e.z, alive: e.alive }));
-      const p = aimPoint([cam.position.x, cam.position.y, cam.position.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
-      aimPt.set(p[0], p[1], p[2]);
-      shotDir = aimDirFromEye([eyeV.x, eyeV.y, eyeV.z], p, shotDir);
+      if (tpp) {
+        const hit = aimPointInfo([cam.position.x, cam.position.y, cam.position.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
+        aimPt.set(hit.point[0], hit.point[1], hit.point[2]);
+        shotDir = aimDirFromEye([eyeV.x, eyeV.y, eyeV.z], hit.point, shotDir);
+        aimingAtEnemy.current = hit.hitEnemy;
+      } else {
+        // First person: the crosshair ray starts at the eye, same point the shot fires from.
+        const hit = aimPointInfo([eyeV.x, eyeV.y, eyeV.z], shotDir, [eyeV.x, eyeV.y, eyeV.z], COLLIDERS, enemies);
+        aimingAtEnemy.current = hit.hitEnemy;
+      }
     }
     // Your soldier's rifle points where the shot will actually go (+Z = barrel),
     // up and down included. Dead: let go of it and fall with the clip.
@@ -3077,14 +3085,16 @@ function FpsWorld({ hud, controls, audio, lowSpec, lightFx, minimal, mission, on
       }
     }
     if (h.lock) h.lock.style.opacity = locked.current ? '0' : '1';
-    // crosshair gap grows with spread + recoil
+    // crosshair gap grows with spread + recoil; it turns green over a live target
     const spread = sim.spreadFor(adsCur.current, false, crouchCur.current > 0.5);
     const gap = 5 + spread * 620 + Math.abs(recoilP.current) * 340;
-    const { t, b, l, r } = h.ch;
-    if (t) t.style.transform = `translate(-50%, ${-gap - 8}px)`;
-    if (b) b.style.transform = `translate(-50%, ${gap}px)`;
-    if (l) l.style.transform = `translate(${-gap - 8}px, -50%)`;
-    if (r) r.style.transform = `translate(${gap}px, -50%)`;
+    const { t, b, l, r, c } = h.ch;
+    const chColor = aimingAtEnemy.current ? '#5fd08a' : '#e9edf2';
+    if (t) { t.style.transform = `translate(-50%, ${-gap - 8}px)`; t.style.background = chColor; }
+    if (b) { b.style.transform = `translate(-50%, ${gap}px)`; b.style.background = chColor; }
+    if (l) { l.style.transform = `translate(${-gap - 8}px, -50%)`; l.style.background = chColor; }
+    if (r) { r.style.transform = `translate(${gap}px, -50%)`; r.style.background = chColor; }
+    if (c) c.style.background = chColor;
 
     paintRefills();   // no-ops unless the count moved
     // health bar + damage vignette (red flash on hit, and a base tint when low)
@@ -4016,7 +4026,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
     ? Math.min(resumeLevel, CAMPAIGN.length - 1) : -1;
   const hud = useRef<Hud>({
     root: null, ammo: null, fireMode: null, weapon: null, loadout: null, attachments: null, nvgTint: null, scope: null, reload: null, reloadBar: null, reloadHint: null, hit: null,
-    ch: { t: null, b: null, l: null, r: null }, lock: null, kills: null,
+    ch: { t: null, b: null, l: null, r: null, c: null }, lock: null, kills: null,
     healthFill: null, refills: null, vignette: null, hitDir: null, down: null, arrows: [],
     objText: null, survEnd: null, survEndText: null, waveHud: null, waveLabel: null, waveRooms: null, waveDone: null, waveDoneText: null, waveDoneSub: null, objArrow: null, briefing: null, complete: null, perf: null,
     lockReticle: null,
@@ -4549,7 +4559,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
     paintCrouchBtn(on);
   };
 
-  const tick = 'position:absolute;left:50%;top:50%;background:#e9edf2;box-shadow:0 0 2px #000;';
+  const tick = 'position:absolute;left:50%;top:50%;background:#e9edf2;box-shadow:0 0 2px #000;z-index:2;';
   return (
     <div ref={(r) => { hud.current.root = r; }} style={{ position: 'fixed', inset: 0, background: '#000', cursor: 'none', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none', overflow: 'hidden' }}>
       {/* The RENDERER owns the filmic curve (R3F's ACES default). The composer
@@ -4608,7 +4618,7 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
         <div ref={(r) => { hud.current.ch.b = r; }} style={{ ...s(tick), width: 2, height: 8, transform: 'translate(-50%,8px)' }} />
         <div ref={(r) => { hud.current.ch.l = r; }} style={{ ...s(tick), width: 8, height: 2, transform: 'translate(-16px,-50%)' }} />
         <div ref={(r) => { hud.current.ch.r = r; }} style={{ ...s(tick), width: 8, height: 2, transform: 'translate(8px,-50%)' }} />
-        <div style={{ ...s(tick), width: 2, height: 2, transform: 'translate(-50%,-50%)' }} />
+        <div ref={(r) => { hud.current.ch.c = r; }} style={{ ...s(tick), width: 2, height: 2, transform: 'translate(-50%,-50%)' }} />
 
         {/* hitmarker */}
         <div ref={(r) => { hud.current.hit = r; }} style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', fontSize: 26, fontWeight: 700, opacity: 0, transition: 'opacity .08s', textShadow: '0 0 3px #000' }}>✕</div>
@@ -4822,18 +4832,18 @@ export function ValorScene({ onOpStart, onOpCleared, onOpFailed, startMission, r
 
         {/* zone / op label (operations are chosen outside the game now). On touch it
             shifts right to clear the top-left EXIT button. */}
-        <div style={{ position: 'absolute', left: isTouch ? 90 : 150, top: 20 }}>
-          <span style={{ fontSize: 12, letterSpacing: 2, color: '#6f7d8c' }}>{mode === 'endless' ? `Valor · ${seasonal ? 'SEASONAL CAMPAIGN' : 'ENDLESS'} · ${mission.name}` : mode === 'gauntlet' ? 'Valor · GAUNTLET · RANKED' : mode === 'survival' ? 'Valor · SURVIVAL · THE KILL-HOUSE' : `Valor · ${mission.zone} · OP ${missionIndex + 1}/${CAMPAIGN.length}`}</span>
+        <div style={{ position: 'absolute', left: isTouch ? 90 : 150, top: 20, background: 'rgba(0,0,0,.4)', padding: '4px 10px', borderRadius: 4 }}>
+          <span style={{ fontSize: 12, letterSpacing: 2, color: '#c3d1de', textShadow: '0 0 4px #000' }}>{mode === 'endless' ? `Valor · ${seasonal ? 'SEASONAL CAMPAIGN' : 'ENDLESS'} · ${mission.name}` : mode === 'gauntlet' ? 'Valor · GAUNTLET · RANKED' : mode === 'survival' ? 'Valor · SURVIVAL · THE KILL-HOUSE' : `Valor · ${mission.zone} · OP ${missionIndex + 1}/${CAMPAIGN.length}`}</span>
         </div>
         {!isTouch && (
-          <div style={{ position: 'absolute', right: 26, top: 20, fontSize: 11, lineHeight: 1.7, textAlign: 'right', color: '#6f7d8c' }}>
+          <div style={{ position: 'absolute', right: 26, top: 20, fontSize: 11, lineHeight: 1.7, textAlign: 'right', color: '#c3d1de', textShadow: '0 0 4px #000', background: 'rgba(0,0,0,.4)', padding: '6px 10px', borderRadius: 4 }}>
             WASD move · MOUSE / ARROWS look<br />SPACE fire · SHIFT ads · T target · Q/E lean · C crouch · R reload · B fire-mode<br />1 / 2 or X swap weapon · N nvg · F light · L laser · O optic · V view · M ops · ESC release mouse
           </div>
         )}
 
         {/* aim hint — desktop only (mobile has visible controls) */}
         {!isTouch && (
-          <div ref={(r) => { hud.current.lock = r; }} style={{ position: 'absolute', left: '50%', top: '44%', transform: 'translate(-50%,0)', fontSize: 13, color: '#9fb4c8', background: 'rgba(0,0,0,.45)', padding: '8px 14px', borderRadius: 6 }}>
+          <div ref={(r) => { hud.current.lock = r; }} style={{ position: 'absolute', left: '50%', top: '44%', transform: 'translate(-50%,0)', fontSize: 13, color: '#e9edf2', textShadow: '0 0 4px #000', background: 'rgba(0,0,0,.7)', padding: '8px 14px', borderRadius: 6 }}>
             AIM UP/DOWN: move the mouse (captures on your first keypress) · or use the ARROW KEYS · Esc releases the mouse, then EXIT / ⏸ are top-left
           </div>
         )}
