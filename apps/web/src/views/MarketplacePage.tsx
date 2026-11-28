@@ -1,15 +1,19 @@
 'use client'
 
+import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { ShoppingBag } from 'lucide-react'
+import { ShoppingBag, Store, Tag } from 'lucide-react'
 import MarketplaceGrid from '@/components/marketplace/MarketplaceGrid'
 import ResaleBrowse from '@/components/marketplace/ResaleBrowse'
 import { useGBalance } from '@/hooks/useGBalance'
 import { useResolvedAuth } from '@/hooks/useResolvedAuth'
 
+type MarketTab = 'shop' | 'resale'
+
 export default function MarketplacePage() {
   const { address } = useResolvedAuth()
   const { formatted: gBalance } = useGBalance(address)
+  const [tab, setTab] = useState<MarketTab>('shop')
 
   return (
     <div className="flex flex-col gap-6">
@@ -55,21 +59,49 @@ export default function MarketplacePage() {
         </div>
       </motion.div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, delay: 0.12 }}
-      >
-        <MarketplaceGrid walletAddress={address} />
-      </motion.div>
+      {/* Shop vs Player Listings — two different sources (the house's catalogue
+          vs another player's resale), kept visually and functionally separate
+          instead of stacked under one scroll. */}
+      <div className="flex gap-2">
+        <TabBtn active={tab === 'shop'} onClick={() => setTab('shop')} label="Shop" Icon={Store} />
+        <TabBtn active={tab === 'resale'} onClick={() => setTab('resale')} label="Player Listings" Icon={Tag} />
+      </div>
 
       <motion.div
+        key={tab}
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, delay: 0.18 }}
+        transition={{ duration: 0.35 }}
       >
-        <ResaleBrowse walletAddress={address} />
+        {tab === 'shop' ? (
+          <MarketplaceGrid walletAddress={address} />
+        ) : (
+          <ResaleBrowse walletAddress={address} />
+        )}
       </motion.div>
     </div>
+  )
+}
+
+import type { LucideIcon } from 'lucide-react'
+
+function TabBtn({ active, onClick, label, Icon }: {
+  active: boolean
+  onClick: () => void
+  label: string
+  Icon: LucideIcon
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
+        active
+          ? 'bg-valor-gold text-black'
+          : 'bg-valor-surface border border-valor-border text-slate-400 hover:border-slate-500 hover:text-white'
+      }`}
+    >
+      <Icon size={15} strokeWidth={2} />
+      {label}
+    </button>
   )
 }

@@ -115,6 +115,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("add_notifications.sql",     include_str!("../migrations/add_notifications.sql")),
     // References `items`; long applied by the time this runs.
     ("add_gifts.sql",             include_str!("../migrations/add_gifts.sql")),
+    // On-chain event sync (event_listener.rs): cursor + processed-event log.
+    ("add_chain_event_sync.sql",  include_str!("../migrations/add_chain_event_sync.sql")),
 ];
 
 /// Apply every migration not yet recorded, in order, each in its own transaction. Called

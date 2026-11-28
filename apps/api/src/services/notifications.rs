@@ -62,6 +62,8 @@ pub fn for_ledger(category: &str, amount: Decimal) -> Option<(&'static str, Stri
         "ubi_claim" => ("transaction", format!("Daily claim: +{g} G$"), "Your daily G$ claim went through.".to_string(), "/profile"),
         "marketplace_purchase" => ("transaction", "Purchase complete".to_string(), format!("{g} G$ spent in the Market."), "/marketplace"),
         "marketplace_gift" => ("transaction", "Gift sent".to_string(), format!("{g} G$ — your gift has been delivered."), "/marketplace"),
+        "resale_sale" => ("money", format!("+{g} G$ — your item sold"), "A player bought your resale listing.".to_string(), "/marketplace"),
+        "resale_purchase" => ("transaction", "Resale purchase complete".to_string(), format!("{g} G$ — the item is in your inventory."), "/profile"),
         "transfer_out" => ("transaction", format!("Sent {g} G$"), "Your transfer went through.".to_string(), "/profile"),
         _ => return None,
     };

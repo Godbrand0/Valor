@@ -222,7 +222,7 @@ pub async fn arena_ws(
                 Message::Close(reason) => {
                     tracing::info!("arena_ws: close frame from {:?} ({:?})", wallet, reason);
                     if let Some(ref w) = wallet {
-                        let _ = server_tx.send(ServerMsg::Leave { wallet: w.clone() });
+                        let _ = server_tx.send(ServerMsg::Leave { wallet: w.clone(), tx: client_tx.clone() });
                     }
                     let _ = session.close(reason).await;
                     break;
@@ -238,7 +238,7 @@ pub async fn arena_ws(
         // incident needed distinguishing from "never connected at all".
         tracing::info!("arena_ws: stream ended for {:?} (no close frame)", wallet);
         if let Some(w) = wallet {
-            let _ = server_tx.send(ServerMsg::Leave { wallet: w });
+            let _ = server_tx.send(ServerMsg::Leave { wallet: w, tx: client_tx });
         }
     });
 

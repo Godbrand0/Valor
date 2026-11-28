@@ -39,10 +39,14 @@ export function usePlayerSync(address: string | undefined) {
       clearPlayer()
     }
 
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+    let cancelled = false
+    let activeController: AbortController | null = null
 
     async function sync() {
+      const controller = new AbortController()
+      activeController = controller
+      const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
       try {
         const [playerRes, inventoryRes] = await Promise.all([
           fetchWithTimeout(`${API}/players/${wallet}`, controller.signal),
@@ -50,6 +54,8 @@ export function usePlayerSync(address: string | undefined) {
           // (that request can't reach it, and expires) — see needsTapToSign.
           authedFetch(`/players/${wallet}/inventory`, { signal: controller.signal }, wallet, walletClient, { background: true }),
         ])
+
+        if (cancelled) return
 
         if (playerRes.ok) {
           const player = await playerRes.json()
@@ -75,18 +81,25 @@ export function usePlayerSync(address: string | undefined) {
         }
 
       } catch {
-        setSyncFailed(true)
+        if (!cancelled) setSyncFailed(true)
       } finally {
         clearTimeout(timeoutId)
-        setPlayerSynced(true)
+        if (!cancelled) setPlayerSynced(true)
       }
     }
 
     sync()
+    // Re-syncs inventory (and player) every 30s, not just on mount/address
+    // change — the backend's own view of inventory can move without the
+    // player doing anything here (a resale sale settling, a gift landing),
+    // and without this an already-open tab would only ever see it on a
+    // fresh reload.
+    const intervalId = setInterval(sync, 30_000)
 
     return () => {
-      controller.abort()
-      clearTimeout(timeoutId)
+      cancelled = true
+      clearInterval(intervalId)
+      activeController?.abort()
     }
   }, [address, walletClient, sessionVersion, setPlayer, setInventory, clearPlayer, setPlayerSynced, setVerified, setSyncFailed])
 }
