@@ -91,6 +91,33 @@ export function placeCamera(
 
 export interface AimTarget { x: number; z: number; alive: boolean }
 
+export interface AimHit { point: Vec3; hitEnemy: boolean }
+
+/**
+ * Like `aimPoint`, but also reports whether the closest thing under the
+ * crosshair was an enemy (vs. a wall or the floor) — so a HUD reticle can
+ * react to "aimed at a target" without re-running the raycast.
+ */
+export function aimPointInfo(
+  camPos: Vec3, fwd: Vec3, eye: Vec3, boxes: readonly CoverBox[], enemies: readonly AimTarget[],
+): AimHit {
+  // Start the search level with the eye along the ray, not at the camera.
+  const t0 = Math.max(0, (eye[0] - camPos[0]) * fwd[0] + (eye[1] - camPos[1]) * fwd[1] + (eye[2] - camPos[2]) * fwd[2]);
+  let best = AIM_MAX;
+  let hitEnemy = false;
+  const consider = (t: number | null, enemy: boolean) => {
+    if (t !== null && t > t0 && t < best) { best = t; hitEnemy = enemy; }
+  };
+  for (const c of boxes) consider(rayAABB(camPos, fwd, aabbOfCover(c)), false);
+  consider(rayGround(camPos, fwd), false);
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    for (const z of bodyZones(e)) consider(rayAABB(camPos, fwd, [z.min, z.max]), true);
+    consider(raySphere(camPos, fwd, [e.x, FPS_TUNING.HEAD_Y, e.z], FPS_TUNING.HEAD_RADIUS), true);
+  }
+  return { point: [camPos[0] + fwd[0] * best, camPos[1] + fwd[1] * best, camPos[2] + fwd[2] * best], hitEnemy };
+}
+
 /**
  * The world point under the crosshair: the first wall, floor or enemy the
  * CAMERA's centre ray meets in front of the player. Hits between the camera and
@@ -100,18 +127,7 @@ export interface AimTarget { x: number; z: number; alive: boolean }
 export function aimPoint(
   camPos: Vec3, fwd: Vec3, eye: Vec3, boxes: readonly CoverBox[], enemies: readonly AimTarget[],
 ): Vec3 {
-  // Start the search level with the eye along the ray, not at the camera.
-  const t0 = Math.max(0, (eye[0] - camPos[0]) * fwd[0] + (eye[1] - camPos[1]) * fwd[1] + (eye[2] - camPos[2]) * fwd[2]);
-  let best = AIM_MAX;
-  const consider = (t: number | null) => { if (t !== null && t > t0 && t < best) best = t; };
-  for (const c of boxes) consider(rayAABB(camPos, fwd, aabbOfCover(c)));
-  consider(rayGround(camPos, fwd));
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    for (const z of bodyZones(e)) consider(rayAABB(camPos, fwd, [z.min, z.max]));
-    consider(raySphere(camPos, fwd, [e.x, FPS_TUNING.HEAD_Y, e.z], FPS_TUNING.HEAD_RADIUS));
-  }
-  return [camPos[0] + fwd[0] * best, camPos[1] + fwd[1] * best, camPos[2] + fwd[2] * best];
+  return aimPointInfo(camPos, fwd, eye, boxes, enemies).point;
 }
 
 /**

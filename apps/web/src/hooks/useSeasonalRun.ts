@@ -10,6 +10,12 @@ export interface SeasonBoardEntry {
   est_payout_g: number
 }
 
+export interface PayoutTier {
+  rank_from: number
+  rank_to: number
+  amount_g: number
+}
+
 export interface Season {
   id: string
   name: string
@@ -20,6 +26,8 @@ export interface Season {
   ended: boolean
   seed: number
   prize_pool_g: number
+  /** Rank ranges that pay the same amount, e.g. 1-5 at 60,000 G$ each. */
+  payout_tiers: PayoutTier[]
   payout_status: string
   /** Set when the prize is paid to one group's members only. */
   payout_group?: { slug: string; name: string } | null
